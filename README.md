@@ -1,164 +1,120 @@
-<div align="center">
-  <h1>TBDub: Production-Oriented Visual Dubbing</h1>
-  <p><strong>Bihan Li<sup>*</sup>, Xinyang Li<sup>*</sup>, Zeran Xu, Meiguang Jin<sup>†</sup>, Junfeng Ma</strong></p>
-  <p>Taobao &amp; Tmall Group, Alibaba Group</p>
-  <p>
-    <a href="https://arxiv.org/abs/2609.06144"><img src="https://img.shields.io/badge/arXiv-Paper-red.svg" alt="arXiv Paper"></a>
-    <a href="https://taoliveaigc.github.io/TBDub/"><img src="https://img.shields.io/badge/Project-Page-blue" alt="Project Page"></a>
-    <a href="https://github.com/TaoLiveAIGC/TBDub"><img src="https://img.shields.io/badge/GitHub-Code-181717?logo=github" alt="GitHub"></a>
-    <a href="https://huggingface.co/TaoLiveAIGC/TBDub"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Model-yellow" alt="Hugging Face"></a>
-    <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache--2.0-yellow" alt="License: Apache-2.0"></a>
-  </p>
-</div>
+# TBDub 数字人配音服务
 
-TBDub is an audio-driven video dubbing system designed for high-fidelity identity preservation, temporal consistency, and robust lip synchronization under challenging motion, pose, occlusion, and cross-domain conditions.
+淘宝天猫开源 [TBDub](https://github.com/TaoLiveAIGC/TBDub) 的口型同步配音，本仓库在官方推理之上加了：
 
-This repository contains the inference code. Model checkpoints are hosted on [Hugging Face](https://huggingface.co/TaoLiveAIGC/TBDub).
+- 网页控制台（密钥门禁）
+- 形象上传 / 转码 / 作品排队
+- 给业务前端对接的 HTTP 接口
 
-## Inference pipeline
+官方单次推理说明见 [`README copy.md`](README%20copy.md)。换机安装、权重、进程红线见 [`部署安装文档.md`](部署安装文档.md)。业务前端对接见 [`TBDub_API接口文档.md`](TBDub_API接口文档.md)。
 
-1. Detect and track facial landmarks with DWPose.
-2. Crop and align the face region to `512 x 512`.
-3. Encode the reference video into latent tokens.
-4. Generate audio-aligned target latents with the TBDub DiT and cross-clip motion conditioning.
-5. Decode the generated latents, correct color statistics, and paste the face region back into the source video.
+**不要改官方合成引擎**（`inference.py`、`preprocessing.py`、`video_utils.py`、`diffsynth/`、`dwpose_tools/`）。服务层只做裁工作视频、排队、进度、过期清理。
 
-For an already aligned `512 x 512` face video, pass `--cropped-input` to skip steps 1 and 5.
+---
 
-## Requirements
+## 现网
 
-- Linux with an NVIDIA GPU
-- Python 3.10+
-- CUDA-compatible PyTorch
-- `ffmpeg` available on `PATH`
-
-Create an environment and install PyTorch for your CUDA version first. Then install the remaining packages:
+| 项 | 值 |
+|---|---|
+| 控制台 / API | http://10.60.19.103:8811/ |
+| 端口 | **8811**（HTTP，站点根路径，无额外前缀） |
+| 密钥 | `config.yaml` 的 `admin_key` |
+| GPU | 同时只跑一条合成 |
 
 ```bash
-pip install -r requirements.txt
-pip install -U openmim
-mim install "mmcv==2.1.0"
+curl -s http://127.0.0.1:8811/api/system/ready
 ```
 
-The DWPose preprocessing path also uses `mmengine`, `mmdet`, and `mmpose`, which are listed in `requirements.txt`. Follow the official OpenMMLab compatibility matrix if your CUDA or PyTorch version requires different package versions.
+`data.ready == true` 且 `checks.ffmpeg / gpu / model` 均为 true 即可提交任务。
 
-## Checkpoints
+---
 
-Place the following files under `checkpoints/`, or provide their paths through the corresponding command-line options:
+## 进程
 
 ```text
-checkpoints/
-├── tbdub_base.safetensors
-├── tbdub_finetune.safetensors
-├── tbdub_student.safetensors       # optional distilled Student
-├── models_t5_umt5-xxl-enc-bf16.safetensors
-├── Wan2.2_VAE.safetensors
-├── null_prompt_emb.pt
-├── umt5-xxl/
-└── hubert-large-ll60k/
-
-dwpose_tools/models/
-├── yolox_l_8x8_300e_coco_20211126_140236-d3bd2b23.pth
-└── rtmw-x_simcc-cocktail14_pt-ucoco_270e-384x288-f840f204_20231122.pth
+浏览器 / 业务前端
+    ↓  :8811
+python -m server          # FastAPI + 静态控制台。不要 --reload
+    ↓
+python -m server.worker   # 转码形象、取队列、拉起 inference.py
+    ↓
+inference.py              # 占 GPU。重启接口或 Worker 都不要杀它
 ```
 
+| 脚本 | 作用 |
+|---|---|
+| `bash start_server.sh` | 起 Worker + 接口（末尾 `exec`，前台会占终端） |
+| `bash restart_api.sh` | 只重启接口 |
+| `bash restart_worker.sh` | 只重启 Worker，不杀正在跑的推理 |
 
+查进程只用 `server/procs.sh` 里的函数，**禁止** `pgrep -f server` / `pkill python`。
 
-Download the configuration manifest together with the model variant you plan to use.
-
-Teacher (30 steps):
+后台示例：
 
 ```bash
-hf download TaoLiveAIGC/TBDub \
-  config.json null_prompt_emb.pt \
-  tbdub_base.safetensors tbdub_finetune.safetensors \
-  --local-dir checkpoints
+cd /root/AI/TBDub
+mkdir -p data
+nohup bash start_server.sh >> data/api.log 2>&1 &
 ```
 
-Student (2 steps):
+---
 
-```bash
-hf download TaoLiveAIGC/TBDub \
-  config.json null_prompt_emb.pt \
-  tbdub_base.safetensors tbdub_student.safetensors \
-  --local-dir checkpoints
+## 产品约定
+
+| `steps` | 页面 | 引擎 | 实际步数 |
+|---|---|---|---|
+| 50（默认） | 高质量 | Student | 2 |
+| 80 | 超高质量 | Teacher | 30 |
+| 30 | 标准（接口仍接受） | Student | 2 |
+
+- 形象视频：≤ 5 分钟、≤ 2GB
+- 驱动音频：≤ 3 分钟、≤ 300MB
+- 作品：完成 / 失败 / 取消后保留 **15 天**，到期整条删除；排队和合成中不删
+- 长形象只切约 12 秒给官方，官方再正放倒放对齐音频
+
+---
+
+## 目录
+
+```text
+admin/                 本仓库控制台静态页
+server/                FastAPI + Worker（本仓库加的，改行为只动这里）
+diffsynth/             官方推理库（只读）
+dwpose_tools/          官方人脸检测（只读；.pth 权重不进 git）
+checkpoints/           模型权重（不进 git，约 60GB）
+data/                  运行时库、上传、成片（不进 git）
+inference.py           官方入口，由 Worker 调用
+config.yaml            本机配置（不进 git，含密钥）
+config.example.yaml    配置模板
 ```
 
-The versioned `config.json` records the runtime layout and is the model-level query file Hugging Face uses for download statistics. The remaining auxiliary checkpoints can be downloaded from [KlingTeam/X-Dub on Hugging Face](https://huggingface.co/KlingTeam/X-Dub).
+从 `config.example.yaml` 复制为 `config.yaml`，至少改 `admin_key` 和 `python_bin`（写成 conda 环境的绝对路径）。
 
-## Quick start
+---
 
-```bash
-bash infer.sh path/to/source.mp4 path/to/driving.wav results
-```
+## 安装
 
-Equivalent Python command:
+完整步骤、权重清单、软链陷阱、换机搬迁见 [`部署安装文档.md`](部署安装文档.md)。摘要：
 
-```bash
-python inference.py \
-  --video path/to/source.mp4 \
-  --audio path/to/driving.wav \
-  --dit-checkpoint \
-    checkpoints/tbdub_base.safetensors \
-    checkpoints/tbdub_finetune.safetensors \
-  --ref-cfg-scale 2.0 \
-  --audio-cfg-scale 6.0 \
-  --num-inference-steps 30 \
-  --seed 42 \
-  --output-dir results
-```
+1. Ubuntu + NVIDIA GPU + 驱动，`ffmpeg` 在 PATH，Python **3.10**
+2. conda 环境 `tbdub`，先装 GPU 版 PyTorch（现网 `2.4.1+cu121`），再 `requirements.txt` + `requirements-server.txt`，再 `mim install "mmcv==2.1.0"`
+3. 放入 `checkpoints/` 与 DWPose 两个 `.pth`（本仓库 git 不含权重）
+4. `cp config.example.yaml config.yaml` 后启动
 
-The two DiT files are loaded in order: the fine-tuned checkpoint overlays the base checkpoint. The defaults above reproduce the parameter configuration used by the project inference script. A single consolidated checkpoint can also be supplied with one `--dit-checkpoint` path.
+本仓库目前 **没有 git remote**。`config.yaml`、`data/`、权重不要提交。
 
-### Distilled Student inference
+---
 
-A compatible DMD2 Student checkpoint can run with two denoising steps and no classifier-free guidance:
+## 文档
 
-```bash
-python inference.py \
-  --video path/to/source.mp4 \
-  --audio path/to/driving.wav \
-  --dit-checkpoint \
-    checkpoints/tbdub_base.safetensors \
-    checkpoints/tbdub_student.safetensors \
-  --inference-mode student \
-  --num-student-steps 2 \
-  --sigma-shift 1.0 \
-  --motion-from-latents \
-  --seed 42 \
-  --output-dir results
-```
+| 文件 | 给谁 |
+|---|---|
+| `README.md` | 本仓库入口（你正在看的这份） |
+| `部署安装文档.md` | 换机 / 重装 / 后续 AI |
+| `TBDub_API接口文档.md` | 业务前端对接（不含管理后台） |
+| `README copy.md` | 官方 TBDub 推理 README |
+| `config.example.yaml` | 配置模板 |
 
-Checkpoint order matters: the base checkpoint must come first and the Student checkpoint must come last. Student mode uses single-branch denoising and first-clip temporal padding by default. The checkpoint must be distilled for the same two-step schedule, sigma shift, HuBERT conditioning, and 77-frame temporal layout.
+官方论文与权重：[arXiv](https://arxiv.org/abs/2609.06144) · [项目页](https://taoliveaigc.github.io/TBDub/) · [Hugging Face](https://huggingface.co/TaoLiveAIGC/TBDub)
 
-Useful options:
-
-- `--cropped-input`: the source is already an aligned face video.
-- `--motion-from-latents`: pass the previous segment's tail latents to the next segment.
-- `--per-chunk-audio`: extract HuBERT features separately for each segment.
-- `--preprocess-cache cache/sample.pkl`: reuse face crops and bounding boxes.
-- `--save-comparison`: additionally save side-by-side diagnostic videos.
-- `--preprocess-only`: run face preprocessing without loading TBDub checkpoints.
-- `--no-student-first-clip-padding`: disable the default five-frame Student pre-roll.
-
-Run `python inference.py --help` for checkpoint-path and sampling options.
-
-Only load preprocessing cache files that you created or trust, because Python pickle files can execute code while loading.
-
-## Citation
-
-```bibtex
-@misc{li2026tbdubproductionorientedvisualdubbing,
-  title={TBDub: Production-Oriented Visual Dubbing},
-  author={Bihan Li and Xinyang Li and Zeran Xu and Meiguang Jin and Junfeng Ma},
-  year={2026},
-  eprint={2609.06144},
-  archivePrefix={arXiv},
-  primaryClass={cs.CV},
-  url={https://arxiv.org/abs/2609.06144},
-}
-```
-
-## License
-
-The code and released model weights are available under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Third-party dependencies and checkpoints remain subject to their respective licenses.
+官方代码与模型权重为 [Apache License 2.0](LICENSE)。第三方依赖与权重仍受各自许可证约束。
