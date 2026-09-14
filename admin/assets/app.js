@@ -179,7 +179,28 @@ function formatProgressMsg(t) {
 
 function stampRemain(t) {
   if (!t || t.remaining_seconds == null) return t;
-  t._remainAt = Date.now();
+  const sec = Number(t.remaining_seconds);
+  if (!Number.isFinite(sec)) return t;
+  if (t._remainStamp === sec && t._remainAt) return t;
+  t._remainStamp = sec;
+  const at = Date.parse(t.remaining_at);
+  t._remainAt = Number.isFinite(at) ? at : Date.now();
+  return t;
+}
+
+function applyRemain(t, seconds, atIso) {
+  const incoming = Number(seconds);
+  if (!Number.isFinite(incoming)) return t;
+  if (t.remaining_seconds != null && t._remainAt) {
+    const live = liveRemainSeconds(t);
+    // 服务端下限（约 8～12 秒）或静态估值不要把本地倒数弹回去
+    if (incoming > live + 3 && incoming - live < 120) return t;
+  }
+  t.remaining_seconds = incoming;
+  if (atIso) t.remaining_at = atIso;
+  t._remainStamp = incoming;
+  const at = Date.parse(t.remaining_at);
+  t._remainAt = Number.isFinite(at) ? at : Date.now();
   return t;
 }
 
@@ -198,6 +219,14 @@ function formatRemainText(t) {
   if (sec < 60) return `约 ${sec} 秒`;
   if (sec < 600) return `约 ${Math.floor(sec / 60)} 分 ${String(sec % 60).padStart(2, '0')} 秒`;
   return `约 ${Math.max(1, Math.round(sec / 60))} 分钟`;
+}
+
+function formatRunProgressLine(t) {
+  const pct = Math.max(0, Math.min(100, t.progress ?? 0));
+  const msg = formatProgressMsg(t);
+  const remain = formatRemainText(t);
+  const core = `${pct}% ${msg}`.trim();
+  return remain ? `${core} · ${remain}` : core;
 }
 
 function formatTaskTime(t) {
@@ -326,8 +355,20 @@ async function loadHomeTasksSnapshot() {
   await Promise.all(active.slice(0, 10).map(enrichTaskProgress));
 }
 
-function mergeRunProgressWatermark(_prevList, nextList) {
-  return nextList || [];
+function mergeRunProgressWatermark(prevList, nextList) {
+  const prev = new Map((prevList || []).map((t) => [t.task_id, t]));
+  return (nextList || []).map((t) => {
+    const old = prev.get(t.task_id);
+    if (!old || old.status !== 'run' || t.status !== 'run') return t;
+    if (old.remaining_seconds == null || t.remaining_seconds == null || !old._remainAt) return t;
+    const live = liveRemainSeconds(old);
+    if (Math.abs(Number(t.remaining_seconds) - live) > 12) return t;
+    t.remaining_seconds = old.remaining_seconds;
+    t.remaining_at = old.remaining_at;
+    t._remainAt = old._remainAt;
+    t._remainStamp = old._remainStamp;
+    return t;
+  });
 }
 
 function bakeBadge(a) {
@@ -490,7 +531,6 @@ function patchPosterImg(posterEl, src, alt, { eager = true } = {}) {
 function patchMediaCard(card, t, isDoneFocus) {
   const st = STATUS[t.status] || STATUS.wait;
   const pct = Math.max(0, Math.min(100, t.progress ?? 0));
-  const msg = formatProgressMsg(t);
   card.dataset.status = t.status || '';
   const badge = card.querySelector('.badge-status');
   if (badge) {
@@ -503,13 +543,13 @@ function patchMediaCard(card, t, isDoneFocus) {
       const poster = card.querySelector('.poster');
       poster?.insertAdjacentHTML(
         'beforeend',
-        `<div class="progress-ring"><div class="bar"><i style="width:${pct}%"></i></div><span>${pct}% ${esc(msg)}</span></div>`,
+        `<div class="progress-ring"><div class="bar"><i style="width:${pct}%"></i></div><span>${esc(formatRunProgressLine(t))}</span></div>`,
       );
     } else {
       const bar = ring.querySelector('.bar i');
       const span = ring.querySelector('span');
       if (bar) bar.style.width = `${pct}%`;
-      if (span) span.textContent = `${pct}% ${msg}`;
+      if (span) span.textContent = formatRunProgressLine(t);
       ring.classList.remove('hidden');
     }
   } else if (ring) {
@@ -987,8 +1027,11 @@ function tickRemainDisplay() {
   (items || []).forEach((t) => {
     if (t.status !== 'run') return;
     const card = document.querySelector(`[data-task-id="${CSS.escape(t.task_id)}"]`);
-    const timeDd = card?.querySelector('.work-info-row:last-child dd');
+    if (!card) return;
+    const timeDd = card.querySelector('.work-info-row:last-child dd');
     if (timeDd) timeDd.textContent = formatTaskTime(t);
+    const ringSpan = card.querySelector('.progress-ring span');
+    if (ringSpan) ringSpan.textContent = formatRunProgressLine(t);
   });
 }
 
@@ -1160,9 +1203,7 @@ async function enrichTaskProgress(t) {
       }
       if (d.data.progress_message) t.progress_message = d.data.progress_message;
       if (d.data.remaining_seconds != null) {
-        t.remaining_seconds = d.data.remaining_seconds;
-        t.remaining_at = d.data.remaining_at;
-        stampRemain(t);
+        applyRemain(t, d.data.remaining_seconds, d.data.remaining_at);
       }
       if (d.data.preprocess_ready != null) t.preprocess_ready = d.data.preprocess_ready;
       if (d.data.status) t.status = d.data.status;
@@ -1188,13 +1229,12 @@ function renderMediaCard(t, isDoneFocus) {
   const av = avatarForTask(t);
   const rv = resultVideo(t);
   const pct = Math.max(0, Math.min(100, t.progress ?? 0));
-  const msg = formatProgressMsg(t);
   const posterSrc = isDoneFocus && t.status === 'done'
     ? resultCoverPoster(t, av)
     : avatarCoverPoster(av);
   const posterContent = posterHtml(posterSrc, t.task_name, { eager: isDoneFocus });
   const progressBlock = t.status === 'run' || t.status === 'wait'
-    ? `<div class="progress-ring"><div class="bar"><i style="width:${pct}%"></i></div><span>${pct}% ${esc(msg)}</span></div>`
+    ? `<div class="progress-ring"><div class="bar"><i style="width:${pct}%"></i></div><span>${esc(formatRunProgressLine(t))}</span></div>`
     : '';
   const playSrc = t.status === 'done' && rv ? rv : avatarPreviewVideo(av);
   const playFallback = t.status === 'done' ? resultVideoFull(t) : '';
@@ -2441,8 +2481,11 @@ async function refreshTaskLogView() {
     const st = STATUS[d.task_status] || STATUS.wait;
     const pct = d.progress != null ? `${d.progress}%` : '—';
     const pmsg = d.progress_message ? ` · ${d.progress_message}` : '';
+    const task = homeTasksSnapshot.find((x) => x.task_id === taskLogOpenId)
+      || worksPageItems.find((x) => x.task_id === taskLogOpenId);
+    const remain = task ? formatRemainText(task) : '';
     if (meta) {
-      meta.textContent = `${taskLogOpenId} · ${st.label} · ${pct}${pmsg}`;
+      meta.textContent = `${taskLogOpenId} · ${st.label} · ${pct}${pmsg}${remain ? ` · ${remain}` : ''}`;
     }
     if (d.content) {
       pre.textContent = d.content;

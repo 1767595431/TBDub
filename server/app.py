@@ -38,6 +38,7 @@ from .util import (
     normalize_status,
     parse_iso,
     quality_of,
+    remaining_text,
     utc_now,
     audio_duration_limit_message,
     audio_duration_limit_seconds,
@@ -45,7 +46,6 @@ from .util import (
     video_duration_limit_seconds,
 )
 from .worker import (
-    duration_text,
     drop_upload_parts,
     forget_audio_staging,
     purge_task,
@@ -889,7 +889,7 @@ def _task_public(row: dict[str, Any] | None, avatar: dict[str, Any] | None) -> d
         "preprocess_ready": bool(av.get("preprocess_ready")) if av else False,
         "remaining_seconds": remain,
         "remaining_at": iso(utc_now()) if remain is not None else "",
-        "total_duration_text": duration_text(row) if status == "run" else "",
+        "total_duration_text": remaining_text(remain) if remain is not None else "",
         "queue_position": queue_position,
         "queue_ahead": queue_ahead,
         "created_at": row["created_at"],

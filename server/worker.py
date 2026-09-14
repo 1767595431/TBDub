@@ -20,10 +20,12 @@ from .util import (
     eta_seconds,
     iso,
     last_step_tqdm,
+    log_mtime_or_none,
     parse_iso,
-    remaining_from_log,
+    remaining_from_log_path,
     remaining_from_stage,
     remaining_text,
+    stage4_from_log,
     utc_now,
     audio_duration_limit_message,
     video_duration_limit_message,
@@ -111,7 +113,7 @@ def remaining_for(
     tid = task.get("task_id")
     root = Path(data_dir) if data_dir else Path(__file__).resolve().parent.parent / "data"
     if tid:
-        live = remaining_from_log(current_run_log(root / "tasks" / tid / "task.log"), task)
+        live = remaining_from_log_path(root / "tasks" / tid / "task.log", task)
         if live is not None:
             return live
     return remaining_from_stage(task, has_preprocess=bool(ready), avatar_duration=avatar_duration)
@@ -933,7 +935,7 @@ class Workers:
     def _current_run_log(self, task_id: str) -> str:
         return current_run_log(self.data_dir / "tasks" / task_id / "task.log")
 
-    def _progress_from_run(self, task_id: str, mode: str, started_ts: float) -> tuple[float, str]:
+    def _progress_from_run(self, task_id: str, mode: str, started_ts: float, latest: dict | None = None) -> tuple[float, str]:
         data = self._current_run_log(task_id)
         lower = data.lower()
         infer = "超高质量推理中" if mode == "teacher" else "高质量推理中"
@@ -945,9 +947,15 @@ class Workers:
             dwpose = (int(item.group(1)), int(item.group(2)))
 
         # 5 段：加载 0-10  预处理 10-22  片段 22-88  解码贴回 88-96  导出 96-100
-        # clip N/N 是最后一段开始，不是已经贴回
-        if "[save_video_with_audio]" in lower or "output saved" in lower:
-            return 90.0, "正在解码并贴回成片（阶段 4/5）"
+        # 最后一段步数跑完后进入 VAE 解码，日志要到贴回编码才再刷
+        log_path = self.data_dir / "tasks" / task_id / "task.log"
+        stage4 = stage4_from_log(
+            data,
+            {"mode": mode, "audio_duration": latest.get("audio_duration") if latest else None},
+            log_mtime=log_mtime_or_none(log_path),
+        )
+        if stage4:
+            return stage4
         if clip:
             current, total = clip
             total = max(1, total)
@@ -977,8 +985,8 @@ class Workers:
         )
         if not latest or latest["status"] != "run":
             return
-        progress, message = self._progress_from_run(task_id, mode, started_ts)
-        remain = remaining_from_log(self._current_run_log(task_id), latest)
+        progress, message = self._progress_from_run(task_id, mode, started_ts, latest)
+        remain = remaining_from_log_path(self.data_dir / "tasks" / task_id / "task.log", latest)
         payload = {
             "progress": progress,
             "progress_message": message,

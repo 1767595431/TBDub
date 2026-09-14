@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -221,6 +222,61 @@ def last_step_tqdm(text: str, steps: int) -> tuple[int, float] | None:
     return samples[-1][0], sit
 
 
+def decode_save_times(frames: float, teacher: bool) -> tuple[float, float, float]:
+    """VAE 解码、贴回编码、预览导出的墙钟秒数。按 4090 实测成片帧数估算。"""
+    count = max(1.0, float(frames))
+    vae = max(45.0, count * (0.26 if teacher else 0.18))
+    paste = max(75.0, 25.0 + count * (0.28 if teacher else 0.20))
+    preview = 20.0
+    return vae, paste, preview
+
+
+def _log_elapsed(log_mtime: float | None, now: float | None) -> float:
+    if not log_mtime:
+        return 0.0
+    return max(0.0, (now if now is not None else time.time()) - float(log_mtime))
+
+
+def log_mtime_or_none(path: Path) -> float | None:
+    try:
+        if path.exists():
+            return path.stat().st_mtime
+    except OSError:
+        return None
+    return None
+
+
+def remaining_from_log_path(log_path: Path, task: dict) -> float | None:
+    return remaining_from_log(current_run_log(log_path), task, log_mtime=log_mtime_or_none(log_path))
+
+
+def stage4_from_log(
+    text: str,
+    task: dict,
+    log_mtime: float | None = None,
+    now: float | None = None,
+) -> tuple[float, str] | None:
+    parsed = _parse_run_log(text, task)
+    if parsed is None:
+        return None
+    teacher, frames, _clips, steps, _sit, tqdm, lower = parsed
+    clip = None
+    for item in LOG_CLIP_RE.finditer(text):
+        clip = (int(item.group(1)), int(item.group(2)))
+    last_done = bool(clip and clip[0] >= clip[1] and tqdm and tqdm[0] >= steps)
+    if "[save_video_with_audio]" not in lower and "output saved" not in lower and not last_done:
+        return None
+    vae, paste, _preview = decode_save_times(frames, teacher)
+    elapsed = _log_elapsed(log_mtime, now)
+    if "output saved" in lower:
+        frac = 0.95
+    elif "[save_video_with_audio]" in lower:
+        frac = min(0.92, 0.42 + 0.50 * min(1.0, elapsed / max(1.0, paste)))
+    else:
+        frac = min(0.42, elapsed / max(1.0, vae))
+    return round(88.0 + frac * 8.0, 1), "正在解码并贴回成片（阶段 4/5）"
+
+
 def stage_times(
     audio_duration: float | None,
     mode: str,
@@ -240,12 +296,11 @@ def stage_times(
         work = min(WORK_CLIP_SECONDS, max(1.0, float(avatar_duration or WORK_CLIP_SECONDS)))
         prep = max(25.0, min(90.0, work * 5.0))
     infer = clips * steps * sit
-    save = min(180.0, max(40.0, 30.0 + frames * (0.07 if teacher else 0.04)))
-    preview = 15.0
-    return {"boot": boot, "prep": prep, "infer": infer, "save": save, "preview": preview}
+    vae, paste, preview = decode_save_times(frames, teacher)
+    return {"boot": boot, "prep": prep, "infer": infer, "save": vae + paste, "preview": preview}
 
 
-def remaining_from_log(text: str, task: dict) -> float | None:
+def _parse_run_log(text: str, task: dict) -> tuple[bool, float, int, int, float, tuple[int, float] | None, str] | None:
     if not text.strip():
         return None
     mode = task.get("mode") or "student"
@@ -265,17 +320,35 @@ def remaining_from_log(text: str, task: dict) -> float | None:
     tqdm = last_step_tqdm(text, steps)
     if tqdm:
         sit = min(8.0, max(0.3, tqdm[1]))
-    save = min(180.0, max(40.0, 30.0 + frames * (0.07 if teacher else 0.04)))
-    preview = 15.0
-    lower = text.lower()
-    if "[save_video_with_audio]" in lower or "output saved" in lower:
-        return max(20.0, save * 0.45 + preview)
+    return teacher, frames, clips, steps, sit, tqdm, text.lower()
+
+
+def remaining_from_log(
+    text: str,
+    task: dict,
+    log_mtime: float | None = None,
+    now: float | None = None,
+) -> float | None:
+    parsed = _parse_run_log(text, task)
+    if parsed is None:
+        return None
+    teacher, frames, clips, steps, sit, tqdm, lower = parsed
+    vae, paste, preview = decode_save_times(frames, teacher)
+    save = vae + paste
+    elapsed = _log_elapsed(log_mtime, now)
+    if "output saved" in lower:
+        return max(8.0, preview - elapsed)
+    if "[save_video_with_audio]" in lower:
+        return max(12.0, paste + preview - elapsed)
     clip = None
     for item in LOG_CLIP_RE.finditer(text):
         clip = (int(item.group(1)), int(item.group(2)))
     if clip:
         current, total = clip[0], max(1, clip[1], clips)
         done = tqdm[0] if tqdm else 0
+        if current >= total and done >= steps:
+            # VAE 解码期间日志不刷；贴回还没开始，剩余不能低于贴回段
+            return max(paste + preview, vae + paste + preview - elapsed)
         remain = (steps - min(done, steps)) * sit + max(0, total - current) * steps * sit
         return max(20.0, remain + save + preview)
     dwpose = None
@@ -318,7 +391,8 @@ def remaining_from_stage(
     if "导出" in message or progress >= 96:
         remain = stages["preview"]
     elif "解码" in message or "贴回" in message or "保存成片" in message:
-        remain = stages["save"] + stages["preview"]
+        frac = min(1.0, max(0.0, (progress - 88.0) / 8.0))
+        remain = (1.0 - frac) * stages["save"] + stages["preview"]
     elif clip:
         current, total = int(clip.group(1)), max(1, int(clip.group(2)))
         remain = (total - current + 1) / total * stages["infer"] + stages["save"] + stages["preview"]
