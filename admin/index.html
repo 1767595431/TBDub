@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#07080d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>TBDub 数字人平台</title>
+  <!--APP_BASE-->
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon.png" type="image/png" sizes="512x512">
+  <link rel="apple-touch-icon" href="favicon.png">
+  <link rel="stylesheet" href="admin/assets/vendor/animate.min.css">
+  <link rel="stylesheet" href="admin/assets/style.css">
+  <script>
+    (async function () {
+      var TAB = 'dh_admin_gate_tab';
+      var u = window.apiUrl || function (p) { return p; };
+      try {
+        if (sessionStorage.getItem(TAB) === '1') return;
+      } catch (_) {}
+      try {
+        var res = await fetch(u('/api/admin/session'), { credentials: 'same-origin' });
+        var body = await res.json();
+        var d = (body && body.data) || {};
+        if (!d.enabled) {
+          try { sessionStorage.setItem(TAB, '1'); } catch (_) {}
+          return;
+        }
+      } catch (_) {}
+      document.documentElement.style.visibility = 'hidden';
+      try {
+        await fetch(u('/api/admin/logout'), { method: 'POST', credentials: 'same-origin' });
+      } catch (_) {}
+      location.replace(u('/login.html'));
+    })();
+  </script>
+</head>
+<body>
+  <div class="app">
+    <nav class="nav-rail">
+      <div class="brand-mark" title="TBDub 数字人平台">T</div>
+      <div class="nav-items">
+        <button class="nav-item active" data-page="home" title="工作台">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1V9.5z"/></svg>
+          <span>工作台</span>
+        </button>
+        <button class="nav-item" data-page="create" title="创建">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+          <span>创建</span>
+        </button>
+        <button class="nav-item" data-page="works" title="作品库">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 9l5 3-5 3V9z"/></svg>
+          <span>作品</span>
+        </button>
+        <button class="nav-item" data-page="avatars" title="形象库">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.5-6 8-6s8 2 8 6"/></svg>
+          <span>形象</span>
+        </button>
+        <button class="nav-item" data-page="settings" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+          <span>设置</span>
+        </button>
+      </div>
+      <div class="status-dot bad" id="statusDot" title="服务状态"></div>
+    </nav>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 id="pageTitle">工作台</h1>
+          <p id="pageDesc">最新作品与运行状态一览</p>
+        </div>
+        <div class="topbar-actions">
+          <button type="button" class="up-bubble hidden" id="upBubble" title="上传进度" aria-label="上传进度">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span class="up-bubble-count" id="upBubbleCount">0</span>
+          </button>
+          <span class="chip bad" id="readyChip">检测中…</span>
+          <button class="btn btn-ghost btn-sm" id="btnRefresh">刷新</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <!-- 工作台 -->
+        <section id="page-home" class="page active">
+          <div class="stats-row" id="statRow"></div>
+          <div class="filter-bar hidden" id="homeFilterBar">
+            <span id="homeFilterLabel"></span>
+            <button type="button" class="btn btn-ghost btn-sm" id="homeFilterClear">清除筛选</button>
+          </div>
+          <div id="homeFilteredView" class="hidden"></div>
+
+          <div id="homeDefaultView">
+            <div class="section-head">
+              <div>
+                <h2>最新成品</h2>
+                <p>合成完成的数字人视频，点击预览</p>
+              </div>
+            </div>
+            <div class="media-flex-row" id="recentWorks"></div>
+
+            <div class="section-head" style="margin-top:36px">
+              <div>
+                <h2>进行中</h2>
+                <p>正在合成的任务</p>
+              </div>
+            </div>
+            <div class="media-flex-row" id="activeWorks"></div>
+
+            <div class="section-head" style="margin-top:36px">
+              <div><h2>可用形象预览</h2><p>转码完成、可用于合成的形象</p></div>
+              <button class="btn btn-ghost btn-sm" data-goto="avatars">查看全部</button>
+            </div>
+            <div class="media-flex-row" id="homeAvatars"></div>
+          </div>
+        </section>
+
+        <!-- 作品库 -->
+        <section id="page-works" class="page">
+          <div class="tabs" id="workTabs">
+            <button class="tab active" data-filter="all">全部</button>
+            <button class="tab" data-filter="active">进行中</button>
+            <button class="tab" data-filter="done">已完成</button>
+            <button class="tab" data-filter="error">合成失败</button>
+            <button class="tab" data-filter="cancelled">已取消</button>
+          </div>
+          <div class="works-filter-bar">
+            <div class="avatar-private-filter works-user-filter" id="worksUserFilterWrap">
+              <input type="search" class="search-input" id="workUserSearch" placeholder="输入用户ID筛选…">
+              <p class="hint-text" id="workUserHint">留空显示全部用户；输入后仅显示该用户的合成任务</p>
+            </div>
+            <input type="search" class="search-input" id="workSearch" placeholder="搜索作品名称…">
+          </div>
+          <div class="list-toolbar" id="worksToolbar">
+            <label class="check-all"><input type="checkbox" id="worksSelectAll"> 全选本页</label>
+            <button type="button" class="btn btn-danger btn-sm hidden" id="worksBatchDel">删除选中</button>
+            <span class="pager-meta" id="worksPagerMeta"></span>
+          </div>
+          <div class="works-grid" id="worksGrid"></div>
+          <div class="pager page-pager" id="worksPager"></div>
+        </section>
+
+        <!-- 形象库 -->
+        <section id="page-avatars" class="page">
+          <div class="avatars-full-layout">
+            <div class="avatars-list-col">
+              <div class="avatar-toolbar">
+                <div class="avatar-type-tabs" id="avatarTypeTabs">
+                  <button type="button" class="tab active" data-avatar-tab="public">
+                    公共形象 <span class="chip" id="avatarTabPublicCount">0</span>
+                  </button>
+                  <button type="button" class="tab" data-avatar-tab="private">
+                    个人形象 <span class="chip" id="avatarTabPrivateCount">0</span>
+                  </button>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" id="btnOpenUpload">上传形象</button>
+              </div>
+              <div class="avatar-private-filter hidden" id="avatarPrivateFilterWrap">
+                <input type="search" class="search-input" id="avatarPrivateSearch" placeholder="输入用户名筛选…">
+                <p class="hint-text" id="avatarPrivateHint">必须输入用户ID才能查看该用户的个人形象，不会列出其他人的个人库</p>
+              </div>
+              <div class="media-grid avatar-page-grid" id="avatarGrid"></div>
+            </div>
+            <div class="pager page-pager" id="avatarPager"></div>
+          </div>
+        </section>
+
+        <!-- 创建 -->
+        <section id="page-create" class="page">
+          <div class="avatars-split-layout">
+            <div class="avatars-list-col">
+              <div class="avatar-type-tabs" id="createAvatarTypeTabs">
+                <button type="button" class="tab active" data-avatar-tab="public">
+                  公共形象 <span class="chip" id="createAvatarTabPublicCount">0</span>
+                </button>
+                <button type="button" class="tab" data-avatar-tab="private">
+                  个人形象 <span class="chip" id="createAvatarTabPrivateCount">0</span>
+                </button>
+              </div>
+              <div class="avatar-private-filter hidden" id="createPrivateFilterWrap">
+                <input type="search" class="search-input" id="createPrivateSearch" placeholder="输入用户名筛选…">
+                <p class="hint-text" id="createPrivateHint">必须输入用户ID才能查看该用户的个人形象，不会列出其他人的个人库</p>
+              </div>
+              <div class="media-grid avatar-page-grid" id="createAvatarGrid"></div>
+            </div>
+            <div class="pager page-pager" id="createAvatarPager"></div>
+            <div class="avatars-upload-col panel sticky-panel">
+              <div class="create-panel-head">
+                <h3>创建作品</h3>
+                <p class="hint-text">左侧选择形象，填写信息后上传音频即可合成</p>
+              </div>
+              <div class="create-preview-stage" id="createPreview">
+                <div class="empty-stage">
+                  <svg width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.5-6 8-6s8 2 8 6"/></svg>
+                  <span>请选择目标形象</span>
+                </div>
+              </div>
+              <form id="taskForm" class="create-task-form">
+                <input type="hidden" name="avatar_identifier" id="pickedAvatar">
+                <div class="field-row">
+                  <div class="field"><label>用户ID</label><input name="username" required placeholder="如：King"></div>
+                  <div class="field"><label>作品名称</label><input name="task_name" required placeholder="今日新闻"></div>
+                </div>
+                <div class="field">
+                  <label>合成质量</label>
+                  <div class="quality-steps" role="radiogroup" aria-label="合成质量">
+                    <label class="step"><input type="radio" name="steps" value="50" checked><span class="step-name">高质量</span></label>
+                    <label class="step step-ultra"><input type="radio" name="steps" value="80"><span class="step-name">超高质量</span></label>
+                  </div>
+                  <p class="hint-text quality-hint">
+                    <strong>高质量</strong>使用 Student，速度更快。
+                    <strong>超高质量</strong>使用 Teacher，嘴型更稳，但<strong>耗时明显更长，请耐心等待</strong>。
+                    同一形象<strong>首次合成</strong>会做人脸预处理并保存，之后会直接复用。
+                    形象过长时只取一段给官方合成，官方再<strong>正放倒放</strong>对齐音频，避免整段进内存。
+                  </p>
+                </div>
+                <div class="field field-audio">
+                  <label>驱动音频</label>
+                  <label class="file-drop create-audio-drop" id="audioDrop">
+                    <input type="file" name="audio" accept="audio/*" required>
+                    <div class="icon">🎵</div>
+                    <p id="audioLabel">拖拽或点击选择 wav / mp3</p>
+                    <div class="audio-up-progress hidden" id="audioUpProgress">
+                      <div class="audio-up-bar"><i id="audioUpBar"></i></div>
+                      <span id="audioUpText">上传中 0%</span>
+                    </div>
+                  </label>
+                </div>
+                <button type="submit" class="btn btn-primary" id="taskSubmit">开始合成</button>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <!-- 设置 -->
+        <section id="page-settings" class="page">
+          <div class="panel" style="margin-bottom:20px">
+            <h3>服务健康</h3>
+            <div class="health-chips" id="healthChips"></div>
+          </div>
+          <div class="panel" style="margin-bottom:20px">
+            <h3>合成 GPU</h3>
+            <p style="color:var(--muted);font-size:13px;margin-bottom:12px">在根目录 <code>config.yaml</code> 里配置。当前 GPU 同时只跑一条合成；超高质量（Teacher）会明显更久，请耐心等待。</p>
+            <div class="health-chips" id="gpuChips"></div>
+          </div>
+          <div class="panel">
+            <h3>访问会话</h3>
+            <p style="color:var(--muted);font-size:14px;margin-bottom:16px">退出、关闭本页，或连续 30 分钟没有任何操作，都会自动登出，需重新输入访问密钥</p>
+            <button class="btn btn-ghost" id="btnAdminLogout" type="button">退出登录</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox">
+    <div class="lightbox-inner">
+      <button class="lightbox-close" id="lbClose">&times;</button>
+      <video id="lbVideo" controls playsinline></video>
+      <div class="lightbox-title" id="lbTitle"></div>
+    </div>
+  </div>
+
+  <div class="up-overlay hidden" id="upModal" aria-hidden="true">
+    <div class="up-dialog" role="dialog" aria-labelledby="upModalTitle">
+      <div class="up-dialog-head">
+        <div>
+          <h3 id="upModalTitle">上传形象</h3>
+          <p>一次可选多个视频。名称默认是文件名，提交前可逐条改。开始上传后即可关掉窗口。</p>
+        </div>
+        <button type="button" class="up-x" id="upModalClose" aria-label="关闭">&times;</button>
+      </div>
+      <div class="up-meta">
+        <label>类型
+          <select id="upType">
+            <option value="public">公共</option>
+            <option value="private">个人</option>
+          </select>
+        </label>
+        <label class="hidden" id="upUserWrap">用户ID
+          <input id="upUser" placeholder="如：u1001" autocomplete="off">
+        </label>
+      </div>
+      <label class="up-drop" id="upDrop">
+        <input type="file" id="upFile" accept="video/*,.mp4,.mov,.mkv,.webm,.avi,.mxf" multiple>
+        <span class="up-drop-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </span>
+        <strong>拖入视频，或点击批量选择</strong>
+        <span>mp4 / mov / mkv / webm / avi / mxf，单文件最大 2GB</span>
+      </label>
+      <div class="up-draft" id="upDraftList"></div>
+      <div class="up-dialog-foot">
+        <span class="up-draft-meta" id="upDraftMeta"></span>
+        <div class="up-dialog-actions">
+          <button type="button" class="btn btn-ghost" id="upModalCancel">取消</button>
+          <button type="button" class="btn btn-primary" id="upModalStart" disabled>开始上传</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="up-dock hidden" id="upDock" aria-hidden="true">
+    <div class="up-dock-head">
+      <strong>上传进度</strong>
+      <div class="up-dock-actions">
+        <button type="button" class="btn btn-ghost btn-sm" id="upClearDone">清除已完成</button>
+        <button type="button" class="up-x sm" id="upDockClose" aria-label="收起">&times;</button>
+      </div>
+    </div>
+    <div class="up-dock-list" id="upDockList"></div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <div class="task-log-overlay hidden" id="taskLogOverlay" aria-hidden="true">
+    <div class="task-log-panel" role="dialog" aria-labelledby="taskLogTitle">
+      <div class="task-log-header">
+        <div class="task-log-headtext">
+          <h3 id="taskLogTitle">任务日志</h3>
+          <p class="task-log-meta" id="taskLogMeta"></p>
+        </div>
+        <div class="task-log-toolbar">
+          <label class="task-log-autoscroll"><input type="checkbox" id="taskLogAutoScroll" checked> 自动滚动</label>
+          <button type="button" class="btn btn-ghost btn-sm" id="taskLogRefresh">刷新</button>
+          <button type="button" class="task-log-close" id="taskLogClose" aria-label="关闭">&times;</button>
+        </div>
+      </div>
+      <pre class="task-log-body" id="taskLogContent"></pre>
+      <div class="task-log-footer" id="taskLogFooter"></div>
+    </div>
+  </div>
+
+  <script src="admin/assets/fx.js"></script>
+  <script src="admin/assets/app.js?v=eta-live-1"></script>
+</body>
+</html>
