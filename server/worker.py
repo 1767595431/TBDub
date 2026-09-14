@@ -25,6 +25,8 @@ from .util import (
     remaining_from_stage,
     remaining_text,
     utc_now,
+    audio_duration_limit_message,
+    video_duration_limit_message,
 )
 
 CLIP_RE = re.compile(r"\[TBDub\]\s+clip\s+(\d+)\s*/\s*(\d+)", re.I)
@@ -381,6 +383,7 @@ class Workers:
                     "progress_message": "合成失败",
                     "error_message": str(exc),
                     "finished_at": now,
+                    "retain_from": now,
                     "pid": None,
                 })
                 self._append_log(task["task_id"], f"ERROR {exc}\n")
@@ -454,6 +457,7 @@ class Workers:
                         "progress_message": "合成失败",
                         "error_message": str(exc),
                         "finished_at": now,
+                        "retain_from": now,
                         "pid": None,
                     })
                     self._append_log(running["task_id"], f"ERROR {exc}\n")
@@ -481,6 +485,7 @@ class Workers:
                     "progress_message": "合成失败",
                     "error_message": str(exc),
                     "finished_at": now,
+                    "retain_from": now,
                     "pid": None,
                 })
                 self._append_log(row["task_id"], f"ERROR {exc}\n")
@@ -519,12 +524,29 @@ class Workers:
 
     def _bake(self, row: dict) -> None:
         ident = row["identifier"]
+        source = Path(row["source_path"])
+        try:
+            info = media.probe(source)
+        except Exception as exc:
+            raise RuntimeError(f"无法读取形象视频时长：{exc}") from exc
+        limit_msg = video_duration_limit_message(info["duration"], self.cfg.get("max_video_duration_seconds"))
+        if limit_msg:
+            self.store.update("avatars", "identifier", ident, {
+                "bake_status": "error",
+                "status": "failed",
+                "bake_progress": 0,
+                "bake_message": limit_msg,
+                "error": limit_msg,
+                "duration": info["duration"],
+                "width": info["width"],
+                "height": info["height"],
+            })
+            return
         self.store.update("avatars", "identifier", ident, {
             "bake_progress": 10,
             "bake_message": "正在提取封面",
             "status": "preparing",
         })
-        source = Path(row["source_path"])
         poster = self.data_dir / "avatars" / ident / "poster.jpg"
         preview = self.data_dir / "avatars" / ident / "preview.mp4"
         media.extract_poster(source, poster)
@@ -534,7 +556,6 @@ class Workers:
             "poster_path": str(poster),
         })
         media.make_silent_preview(source, preview, self.cfg["preview_bitrate"])
-        info = media.probe(source)
         self.store.update("avatars", "identifier", ident, {
             "bake_status": "ready",
             "status": "ready",
@@ -578,12 +599,25 @@ class Workers:
     def _synthesize(self, row: dict) -> None:
         task_id = row["task_id"]
         avatar = self.store.one("SELECT * FROM avatars WHERE identifier=?", (row["avatar_identifier"],))
-        if not avatar or avatar["bake_status"] != "ready":
+        if not avatar:
+            now = iso(utc_now())
+            self.store.update("tasks", "task_id", task_id, {
+                "status": "cancelled",
+                "progress_message": "已取消",
+                "error_message": "",
+                "finished_at": now,
+                "retain_from": now,
+            })
+            return
+        if avatar["bake_status"] != "ready":
             self._stop.wait(2.0)
             return
         audio = Path(row["audio_path"])
         if not audio.exists():
             raise RuntimeError("音频文件已丢失，无法重试")
+        limit_msg = audio_duration_limit_message(row.get("audio_duration"), self.cfg.get("max_audio_duration_seconds"))
+        if limit_msg:
+            raise RuntimeError(limit_msg)
         started = iso(utc_now())
         if not self.store.claim_wait_task(task_id, {
             "status": "run",

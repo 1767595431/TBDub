@@ -217,7 +217,7 @@
                   </p>
                 </div>
                 <div class="field field-audio">
-                  <label>驱动音频</label>
+                  <label>驱动音频 <span class="hint-text" id="audioLimitHint">支持 wav / mp3 / m4a / aac / flac / ogg，不超过 300MB，时长不超过 3 分钟</span></label>
                   <label class="file-drop create-audio-drop" id="audioDrop">
                     <input type="file" name="audio" accept="audio/*" required>
                     <div class="icon">🎵</div>
@@ -289,7 +289,7 @@
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         </span>
         <strong>拖入视频，或点击批量选择</strong>
-        <span>mp4 / mov / mkv / webm / avi / mxf，单文件最大 2GB</span>
+        <span id="upDropLimit">mp4 / mov / mkv / webm / avi / mxf，单文件最大 2GB，时长不超过 5 分钟</span>
       </label>
       <div class="up-draft" id="upDraftList"></div>
       <div class="up-dialog-foot">
@@ -334,6 +334,6 @@
   </div>
 
   <script src="admin/assets/fx.js"></script>
-  <script src="admin/assets/app.js?v=eta-live-1"></script>
+  <script src="admin/assets/app.js?v=audio-3m-expire-1"></script>
 </body>
 </html>

@@ -113,6 +113,53 @@ def quality_of(steps: int) -> dict[str, str]:
     return QUALITY_MAP[steps]
 
 
+def format_duration_cn(seconds: float | int | None) -> str:
+    sec = max(0, int(round(float(seconds or 0))))
+    if sec < 60:
+        return f"{sec}秒"
+    minutes, rest = divmod(sec, 60)
+    if rest:
+        return f"{minutes}分{rest}秒"
+    return f"{minutes}分钟"
+
+
+def duration_limit_seconds(raw: Any, default: int) -> int:
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def video_duration_limit_seconds(raw: Any, default: int = 300) -> int:
+    return duration_limit_seconds(raw, default)
+
+
+def audio_duration_limit_seconds(raw: Any, default: int = 180) -> int:
+    return duration_limit_seconds(raw, default)
+
+
+def _duration_limit_message(label: str, duration: float | None, max_seconds: float | int | None, default: int) -> str | None:
+    limit = duration_limit_seconds(max_seconds, default)
+    if limit <= 0:
+        return None
+    if round(float(duration or 0)) > limit:
+        return (
+            f"{label}不能超过 {format_duration_cn(limit)}"
+            f"（当前 {format_duration_cn(duration)}）"
+        )
+    return None
+
+
+def video_duration_limit_message(duration: float | None, max_seconds: float | int | None) -> str | None:
+    return _duration_limit_message("形象视频", duration, max_seconds, 300)
+
+
+def audio_duration_limit_message(duration: float | None, max_seconds: float | int | None) -> str | None:
+    return _duration_limit_message("音频", duration, max_seconds, 180)
+
+
 def remaining_text(seconds: float | None, progress: float | None = None) -> str:
     if seconds is None:
         return ""

@@ -34,5 +34,9 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         "max_work_width": int(data.get("max_work_width") or 1920),
         "max_work_height": int(data.get("max_work_height") or 1080),
         "max_preprocess_cache_bytes": int(data.get("max_preprocess_cache_bytes") or 2_500_000_000),
+        "max_video_duration_seconds": int(data["max_video_duration_seconds"])
+        if data.get("max_video_duration_seconds") is not None else 300,
+        "max_audio_duration_seconds": int(data["max_audio_duration_seconds"])
+        if data.get("max_audio_duration_seconds") is not None else 180,
         "root": ROOT,
     }

@@ -1,10 +1,10 @@
 # TBDub API 对接文档
 
-本文仅面向业务对接。下文列出的接口就是对接范围；未出现的路径请勿调用、勿依赖。
+本文只写给**业务前端对接**。下文列出的接口就是对接范围。
 
-路径、字段名与控制台前端保持兼容。若要**原样复用本仓库控制台前端**（只改地址和少量参数），另见 `控制台前端兼容接口说明.md`。本文仍只覆盖第三方业务对接范围。
+未出现的路径请勿调用、勿依赖，也**不要**对接管理后台、密钥门禁、系统运维类接口。
 
-内网 Base URL（对接请用这个）：
+内网 Base URL：
 
 ```text
 http://10.60.19.103:8811
@@ -27,11 +27,9 @@ http://10.60.19.103:8811/api/avatars?type=public
 | 错误写法 | 结果 |
 |---|---|
 | `http://10.60.19.103:8888/...` | 本服务监听 **8811**，不是 8888 |
-| `http://10.60.19.103:8811/QeMixAvatar/api/...` | 本项目**没有** `/QeMixAvatar` 前缀，会 404 |
+| `http://10.60.19.103:8811/<前缀>/api/...` | 本项目**没有**额外路径前缀，会 404 |
 | `https://10.60.19.103:8811/...` | 该端口不是 HTTPS |
 | `http://<其它机器IP>:8811/...` | 仅本机内网 `10.60.19.103` 可达 |
-
-网页控制台与 API 共用同一 Base URL：[http://10.60.19.103:8811](http://10.60.19.103:8811)
 
 当前 GPU **同时只跑一条合成**。创建作品只表示已进入队列。
 
@@ -100,9 +98,7 @@ http://10.60.19.103:8811/api/avatars?type=public
 
 请在对接侧为每个终端用户分配稳定 ID，并在上述位置使用同一值。
 
-**列表、详情 JSON 的 Query 不能用来打开文件。** 个人素材和成片的 URL 即使带了 `?user_id=` 也打不开。
-
-控制台已登录 Cookie（`qemix_gate`）也可打开个人媒体，第三方对接不要依赖 Cookie，请带头。
+**列表、详情 JSON 的 Query 不能用来打开文件。** 个人素材和成片的 URL 即使带了 `?user_id=` 也打不开。请带头，不要依赖页面登录态。
 
 ### 1.3 形象类型
 
@@ -146,7 +142,7 @@ http://10.60.19.103:8811/api/avatars?type=public
 
 | `steps` | `quality_label` | 实际引擎 | 实际推理步数 | 说明 |
 |---|---|---|---|---|
-| `30` | 标准 | Student | 2 | 接口仍接受；控制台页面未展示此档 |
+| `30` | 标准 | Student | 2 | 接口仍接受 |
 | `50` | 高质量（默认） | Student | 2 | 速度快 |
 | `80` | 超高质量 | Teacher | 30 | 嘴型更稳，耗时明显更长 |
 
@@ -158,10 +154,10 @@ http://10.60.19.103:8811/api/avatars?type=public
 
 ### 1.7 素材限制
 
-| 种类 | 支持后缀 | 大小上限 |
-|---|---|---|
-| 形象视频 | `.mp4` `.mov` `.mkv` `.webm` `.avi` `.mxf` | 2GB |
-| 驱动音频 | `.wav` `.mp3` `.m4a` `.aac` `.flac` `.ogg` | 300MB |
+| 种类 | 支持后缀 | 大小上限 | 时长上限 |
+|---|---|---|---|
+| 形象视频 | `.mp4` `.mov` `.mkv` `.webm` `.avi` `.mxf` | 2GB | **5 分钟**（`config.yaml` 的 `max_video_duration_seconds`，默认 300；`0` 表示不限制） |
+| 驱动音频 | `.wav` `.mp3` `.m4a` `.aac` `.flac` `.ogg` | 300MB | **3 分钟**（`max_audio_duration_seconds`，默认 180；`0` 表示不限制） |
 
 ### 1.8 个人库隔离（媒体必须带头）
 
@@ -209,7 +205,7 @@ X-User-Id: u1001
 
 ### 1.10 作品保留期
 
-作品自创建或最后一次完成/重试起保留 **15 天**。到期后**整条任务删除**：列表记录、成片、音频、临时文件一并清掉，不可恢复。正在合成的任务不会删。需要长期保存请自行下载。
+作品自**合成完成、失败或取消**起保留 **15 天**（`task_retain_days`）。到期后**整条任务删除**：列表记录、成片、音频、临时文件一并清掉，不可恢复。正在排队或合成中的任务不会删。需要长期保存请自行下载。查询作品时 `expires_at` 为到期时间。
 
 未完成的形象/音频分片，超过 **24 小时**无新分片会被服务端清理。
 
@@ -269,7 +265,6 @@ X-User-Id: u1001
 | POST | `/api/tasks/{task_id}/retry` | 合成失败或已取消后重试 |
 | GET | `/api/tasks/{task_id}/preview` | 成片预览（mp4，低码率，带声音） |
 | GET | `/api/tasks/{task_id}/download` | 成片原片下载 |
-| GET | `/api/tasks/{task_id}/log` | 合成日志（可选） |
 | DELETE | `/api/tasks/{task_id}` | 删除作品 |
 
 ---
@@ -292,12 +287,16 @@ curl -s http://10.60.19.103:8811/api/system/ready
   "checks": { "ffmpeg": true, "gpu": true, "model": true },
   "gpu_busy": false,
   "gpus": [{ "id": 0, "busy": false, "job_id": null }],
-  "worker_alive": true,
-  "features": { "max_synthesis_duration_seconds": 0 }
+  "features": {
+    "max_synthesis_duration_seconds": 180,
+    "max_audio_duration_seconds": 180,
+    "max_video_duration_seconds": 300,
+    "task_retain_days": 15
+  }
 }
 ```
 
-`features.max_synthesis_duration_seconds` 为 `0` 表示不限制成片时长。没有 GPU 时 `gpus` 为空数组。`HEAD` 只返回头，不返回正文。
+`features.max_audio_duration_seconds` / `max_synthesis_duration_seconds` 为驱动音频时长上限，默认 `180`（3 分钟）。`features.max_video_duration_seconds` 为形象视频时长上限，默认 `300`（5 分钟）。`task_retain_days` 为已结束作品保留天数，默认 15。超过音频/视频上限时，对应上传或创建接口会失败。没有 GPU 时 `gpus` 为空数组。`HEAD` 只返回头，不返回正文。
 
 ---
 
@@ -463,7 +462,7 @@ curl -s "http://10.60.19.103:8811/api/avatars?type=all&username=u1001"
 | `username` 或 `user_id` | string | 个人必填 | 用户 ID |
 | `filename` | string | 是 | 原文件名，用于判断后缀 |
 | `filesize` | int | 是 | 文件字节数 |
-| `chunk_size` | int | 否 | 64KB～16MB，默认 2MB（2097152）。控制台形象分片常用 8MB |
+| `chunk_size` | int | 否 | 64KB～16MB，默认 2MB（2097152）。形象分片建议 8MB |
 
 成功 `data`：
 
@@ -556,6 +555,8 @@ curl -s -X POST http://10.60.19.103:8811/api/avatars/upload \
 | `分片不完整` | 未收齐 |
 | `分片 N 文件丢失` | 分片文件缺失 |
 | `合并后文件大小与声明不一致` | 与 `filesize` 不符 |
+| `无法读取形象视频时长` | ffprobe 失败 |
+| `形象视频不能超过 5分钟（当前 …）` | 超过 `max_video_duration_seconds` |
 | `未知的上传阶段` | `stage` 不是 `init` / `chunk` / `complete` / `abort` |
 
 ```bash
@@ -647,14 +648,13 @@ curl -s -X POST "http://10.60.19.103:8811/api/avatars/<形象ID>/rebake?username
 
 `DELETE /api/avatars/{identifier}`
 
-个人形象必须带 Query `username` 或 `user_id`。若该形象仍有排队或合成中的作品，不能删除。
+个人形象必须带 Query `username` 或 `user_id`。**即使该形象已有未过期作品也可以删除。** 排队中或合成中的作品会被取消；已完成作品会保留到过期，列表里该条 `avatar_missing` 为 `true`。
 
-成功 `msg`：`已删除`。
+成功 `msg`：`已删除`，若取消了未完成作品则为 `已删除，并取消 N 条排队或合成中的作品`。
 
 | `msg` | 场景 |
 |---|---|
 | `形象不存在` | ID 无效或不属于该用户 |
-| `该形象还有排队或正在合成的任务` | 仍有未完成作品 |
 
 ```bash
 curl -s -X DELETE "http://10.60.19.103:8811/api/avatars/<形象ID>?username=u1001"
@@ -738,14 +738,16 @@ curl -H "X-User-Id: u1001" -o avatar.mp4 \
 | `queue_position` | int / null | 仅 `status=wait`：该作品在全站队列中的位置，从 `1` 起 |
 | `queue_ahead` | int / null | 仅 `status=wait`：这条作品前面还有多少条在排队（`queue_position - 1`）。`0` 表示下一条就轮到它 |
 | `created_at` / `started_at` / `finished_at` | string | 时间 |
+| `expires_at` | string / null | 到期时间。仅 `done` / `error` / `cancelled` 有值，从结束时刻起算 15 天；排队/合成中为 `null` |
+| `retain_days` | int | 已结束作品保留天数，当前为 `15` |
 
 原片地址固定为 `/api/tasks/{task_id}/download`，不在 JSON 里单独给出。
 
-作品自创建或最后一次完成/重试起保留 **15 天**。到期后整条作品会被删除：**列表里的记录、成片、音频、临时文件一并清掉**，不可恢复。正在合成的任务不会删。请及时下载需要长期保存的成片。
+作品自**合成完成、失败或取消**起保留 **15 天**。到期后整条作品会被删除：**列表里的记录、成片、音频、临时文件一并清掉**，不可恢复。正在排队或合成中的任务不会删。请及时下载需要长期保存的成片。
 
 ### 6.0 音频分片上传（无信封）
 
-控制台创建作品会先走这里，再把 `audio_upload_id` 交给 `/api/tasks/create`。第三方也可改走整文件字段 `audio`。
+推荐先走这里，再把 `audio_upload_id` 交给 `/api/tasks/create`。也可以改走整文件字段 `audio`。
 
 **成功时字段在 JSON 根上，不要读 `data.upload_id`。**
 
@@ -780,7 +782,7 @@ curl -H "X-User-Id: u1001" -o avatar.mp4 \
 }
 ```
 
-失败 HTTP `400`，`detail` 例如：`不支持的音频格式：.xxx`、`音频不能超过 300MB`、`请使用 JSON 提交 filename 与 size`。
+失败 HTTP `400`，`detail` 例如：`不支持的音频格式：.xxx`、`音频不能超过 300MB`、`音频不能超过 3分钟（当前 …）`、`请使用 JSON 提交 filename 与 size`。
 
 ```bash
 curl -s -X POST http://10.60.19.103:8811/api/uploads \
@@ -896,7 +898,7 @@ curl -s "http://10.60.19.103:8811/api/tasks?username=u1001&status=wait&page=1"
 | `audio` | file | 是* | 驱动音频整文件 |
 | `steps` | int | 否 | 默认 `50`，仅 `30` / `50` / `80`，含义见 [1.6](#16-合成质量) |
 
-\* `audio_upload_id` 与 `audio` 二选一。控制台现行逻辑走分片 + `audio_upload_id`。
+\* `audio_upload_id` 与 `audio` 二选一。推荐走分片 + `audio_upload_id`。
 
 成功 `msg`：`已加入合成队列`，`data` 为作品对象，此时 `status` 为 `wait`，并带 `queue_position`、`queue_ahead`（这条前面还有几条在排）。
 
@@ -907,6 +909,8 @@ curl -s "http://10.60.19.103:8811/api/tasks?username=u1001&status=wait&page=1"
 | `用户ID无效` / `用户ID不能超过 64 个字符` | 用户 ID 非法 |
 | `步数只能是 30, 50, 80` | `steps` 非法 |
 | `不支持的音频格式：.xxx` | 后缀不支持 |
+| `无法读取音频时长` | ffprobe 失败 |
+| `音频不能超过 3分钟（当前 …）` | 超过 `max_audio_duration_seconds` |
 | `形象不存在` | ID 无效，或个人形象不属于该用户 |
 | `形象还在转码，请稍后再提交` | 形象未就绪 |
 | `音频文件为空` | 文件空或分片未完成 |
@@ -1056,40 +1060,10 @@ curl -s -X DELETE "http://10.60.19.103:8811/api/tasks/<作品ID>?username=u1001"
 
 ---
 
-### 6.9 合成日志（可选）
-
-`GET /api/tasks/{task_id}/log?tail=500`
-
-个人作品请带 Query `username` 或 `user_id`。`tail` 为返回末尾行数，默认 `500`。对接可以不调；控制台打开日志窗会用到。
-
-成功 `data`：
-
-```json
-{
-  "content": "日志文本",
-  "exists": true,
-  "task_status": "run",
-  "progress": 40,
-  "progress_message": "高质量推理中（片段 2/4）（阶段 3/5）",
-  "log_path": "可选",
-  "updated_at": "2026-09-14T08:00:00Z"
-}
-```
-
-请读 `content`（不是 `text`）。`task_status` 取值与作品 `status` 相同。
-
-失败 `msg`：`任务不存在`。
-
-```bash
-curl -s "http://10.60.19.103:8811/api/tasks/<作品ID>/log?tail=200&username=u1001"
-```
-
----
-
 ## 7. 对接注意
 
-1. **只使用本文列出的路径。** 其它路径不在对接范围内。
-2. Base URL 必须是 `http://10.60.19.103:8811`。不要加 `/QeMixAvatar`，也不要改成 8888。
+1. **只使用本文列出的路径。** 未列出的路径（含管理后台、门禁、运维状态、合成日志等）不在对接范围内，请勿调用。
+2. Base URL 必须是 `http://10.60.19.103:8811`。不要加额外路径前缀，也不要改成 8888。
 3. 用户 ID 由你们系统生成并保管；本接口按该 ID 隔离个人库，不会替你们做登录态。
 4. 个人媒体必须由你们的服务端加 `X-User-Id` 拉取，不要把可打开的文件地址交给最终用户去分享。
 5. `identifier` 与 `id`、`username` 与 `user_id`、`thumbnail` 与 `preview_thumbnail`、`video_path` 与 `preview_video_path`、`result_path` 与 `result_path_lbr` 为同一数据的别名，任意取一个即可。

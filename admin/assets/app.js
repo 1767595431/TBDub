@@ -2,7 +2,7 @@
 const API = window.APP_BASE || '';
 const PAGES = {
   home: { title: '工作台', desc: '最新作品与运行状态一览' },
-  works: { title: '作品库', desc: '形象 → 成品的完整合成记录，满 15 天自动清理' },
+  works: { title: '作品库', desc: '形象 → 成品的完整合成记录，完成后满 15 天自动清理' },
   avatars: { title: '形象库', desc: '数字人模板视频管理' },
   create: { title: '创建作品', desc: '选择形象，上传音频，一键合成' },
   settings: { title: '设置', desc: '服务状态与访问会话' },
@@ -390,6 +390,7 @@ async function refreshSystemStatsQuiet() {
     const { data: r } = await api('/api/system/status');
     if (r.code === 0) {
       systemStats = r.data;
+      applyMediaLimitHints();
     }
   } catch { /* ignore */ }
 }
@@ -1085,6 +1086,11 @@ async function checkReady() {
       return;
     }
     const { data } = await api('/api/system/ready');
+    const feat = data?.data?.features;
+    if (feat) {
+      systemStats = { ...(systemStats || {}), features: feat };
+      applyMediaLimitHints();
+    }
     const ok = data?.data?.ready;
     $('#readyChip').className = 'chip ' + (ok ? 'ok' : 'bad');
     $('#readyChip').textContent = ok ? '● 服务就绪' : '● 未就绪';
@@ -1169,6 +1175,7 @@ async function refreshHome(showToast = true, { animate = false } = {}) {
     const { data: r } = await api('/api/system/status');
     if (r.code === 0) {
       systemStats = r.data;
+      applyMediaLimitHints();
       scheduleBakePoll();
     }
   } catch { /* ignore */ }
@@ -1711,8 +1718,62 @@ function formatFileSize(bytes) {
 }
 
 function maxSynthesisSeconds() {
-  const n = Number(systemStats?.features?.max_synthesis_duration_seconds);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  return maxAudioSeconds();
+}
+
+function maxAudioSeconds() {
+  const n = Number(
+    systemStats?.features?.max_audio_duration_seconds
+    ?? systemStats?.features?.max_synthesis_duration_seconds,
+  );
+  if (Number.isFinite(n)) return n > 0 ? n : 0;
+  return 180;
+}
+
+function maxVideoSeconds() {
+  const n = Number(systemStats?.features?.max_video_duration_seconds);
+  if (Number.isFinite(n)) return n > 0 ? n : 0;
+  return 300;
+}
+
+function maxSecondsFor(kind) {
+  return kind === 'audio' ? maxAudioSeconds() : maxVideoSeconds();
+}
+
+function applyMediaLimitHints() {
+  applyVideoLimitHint();
+  applyAudioLimitHint();
+}
+
+function applyVideoLimitHint() {
+  const el = $('#upDropLimit');
+  if (!el) return;
+  const maxSec = maxVideoSeconds();
+  const extra = maxSec > 0 ? `，时长不超过 ${formatDurationCn(maxSec)}` : '';
+  el.textContent = `mp4 / mov / mkv / webm / avi / mxf，单文件最大 2GB${extra}`;
+}
+
+function applyAudioLimitHint() {
+  const el = $('#audioLimitHint');
+  if (!el) return;
+  const maxSec = maxAudioSeconds();
+  el.textContent = maxSec > 0
+    ? `支持 wav / mp3 / m4a / aac / flac / ogg，不超过 300MB，时长不超过 ${formatDurationCn(maxSec)}`
+    : '支持 wav / mp3 / m4a / aac / flac / ogg，不超过 300MB';
+}
+
+async function ensureSystemStats() {
+  if (systemStats?.features && Object.prototype.hasOwnProperty.call(systemStats.features, 'max_video_duration_seconds')) {
+    return;
+  }
+  try {
+    const { data: r } = await api('/api/system/ready');
+    const feat = r?.data?.features;
+    if (feat) {
+      systemStats = { ...(systemStats || {}), features: feat };
+      applyMediaLimitHints();
+    }
+  } catch { /* ignore */ }
 }
 
 function formatDurationCn(sec) {
@@ -1755,8 +1816,14 @@ function probeFileDuration(file) {
 }
 
 async function assertFileWithinLimit(file, kind) {
-  const maxSec = maxSynthesisSeconds();
-  const duration = await probeFileDuration(file);
+  const maxSec = maxSecondsFor(kind);
+  let duration;
+  try {
+    duration = await probeFileDuration(file);
+  } catch (err) {
+    if (kind === 'video') return 0;
+    throw err;
+  }
   if (maxSec > 0 && Math.round(duration) > maxSec) {
     throw new Error(durationLimitMessage(kind, duration, maxSec));
   }
@@ -1814,7 +1881,8 @@ async function closeUploadModal() {
   document.body.style.overflow = '';
 }
 
-function addUpFiles(fileList) {
+async function addUpFiles(fileList) {
+  await ensureSystemStats();
   const files = [...(fileList || [])];
   for (const file of files) {
     if (!VIDEO_EXTS.test(file.name)) {
@@ -1827,6 +1895,12 @@ function addUpFiles(fileList) {
     }
     if (file.size > MAX_VIDEO_BYTES) {
       toast(`${file.name} 超过 2GB`, 'error');
+      continue;
+    }
+    try {
+      await assertFileWithinLimit(file, 'video');
+    } catch (err) {
+      toast(`${file.name}：${err.message || '时长超过限制'}`, 'error');
       continue;
     }
     if (upDrafts.some((d) => d.file.name === file.name && d.file.size === file.size)) continue;
@@ -2025,6 +2099,8 @@ async function runAvatarUpload(job) {
   try {
     if (job.cancelled) throw new Error('已取消');
     const file = job.file;
+    await ensureSystemStats();
+    await assertFileWithinLimit(file, 'video');
     const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK));
     const init = new FormData();
     init.append('stage', 'init');
@@ -2670,7 +2746,7 @@ async function init() {
       selectAvatar(use, avatarPreviewVideo(a), avatarPreviewThumb(a));
       return;
     }
-    if (delAv && confirm('删除此形象？')) {
+    if (delAv && confirm('删除此形象？排队或合成中的作品会取消，已完成作品会保留到过期。')) {
       const { data: r } = await api(`/api/avatars/${encodeURIComponent(delAv)}`, { method: 'DELETE' });
       toast(r.msg || '已删除', r.code === 0 ? 'success' : 'error');
       await loadAvatarsData();

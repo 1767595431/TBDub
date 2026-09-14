@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     finished_at TEXT,
     retain_from TEXT NOT NULL,
     pid INTEGER,
-    eta_seconds REAL
+    eta_seconds REAL,
+    avatar_type TEXT
 );
 
 CREATE TABLE IF NOT EXISTS uploads (
@@ -90,6 +91,13 @@ class Store:
         task_cols = {row["name"] for row in self.query("PRAGMA table_info(tasks)")}
         if "eta_seconds" not in task_cols:
             self.execute("ALTER TABLE tasks ADD COLUMN eta_seconds REAL")
+        if "avatar_type" not in task_cols:
+            self.execute("ALTER TABLE tasks ADD COLUMN avatar_type TEXT")
+            self.execute(
+                "UPDATE tasks SET avatar_type=("
+                "SELECT type FROM avatars WHERE avatars.identifier=tasks.avatar_identifier"
+                ") WHERE avatar_type IS NULL OR avatar_type=''"
+            )
 
     def execute(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
         with self._lock:

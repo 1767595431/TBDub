@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -35,8 +36,13 @@ from .util import (
     new_avatar_id,
     new_id,
     normalize_status,
+    parse_iso,
     quality_of,
     utc_now,
+    audio_duration_limit_message,
+    audio_duration_limit_seconds,
+    video_duration_limit_message,
+    video_duration_limit_seconds,
 )
 from .worker import (
     duration_text,
@@ -273,15 +279,23 @@ def build_app() -> FastAPI:
             return fail(str(exc))
         if not row:
             return fail("形象不存在")
-        busy = STORE.one(
-            "SELECT task_id FROM tasks WHERE avatar_identifier=? AND status IN ('wait','run') LIMIT 1",
+        busy = STORE.query(
+            "SELECT task_id FROM tasks WHERE avatar_identifier=? AND status IN ('wait','run')",
             (identifier,),
         )
-        if busy:
-            return fail("该形象还有排队或正在合成的任务")
+        now = iso(utc_now())
+        for task in busy:
+            STORE.update("tasks", "task_id", task["task_id"], {
+                "status": "cancelled",
+                "progress_message": "已取消",
+                "error_message": "",
+                "finished_at": now,
+                "retain_from": now,
+            })
         shutil.rmtree(DATA_DIR / "avatars" / identifier, ignore_errors=True)
         STORE.delete("avatars", "identifier", identifier)
-        return envelope({"identifier": identifier}, "已删除")
+        msg = "已删除" if not busy else f"已删除，并取消 {len(busy)} 条排队或合成中的作品"
+        return envelope({"identifier": identifier, "cancelled_tasks": len(busy)}, msg)
 
     @app.api_route("/api/characters/{ident}/poster", methods=["GET", "HEAD"])
     def character_poster(ident: str, request: Request, x_user_id: str | None = Header(default=None), x_username: str | None = Header(default=None)):
@@ -336,7 +350,7 @@ def build_app() -> FastAPI:
             if uid:
                 if row["user_id"] != uid:
                     continue
-            elif not admin and avatar and avatar["type"] == "private":
+            elif not admin and _task_avatar_kind(row, avatar) != "public":
                 continue
             item = _task_public(row, avatar)
             want = normalize_status(status)
@@ -395,7 +409,10 @@ def build_app() -> FastAPI:
         try:
             duration = media.probe_audio(audio_path)
         except Exception:
-            duration = 0.0
+            return fail("无法读取音频时长")
+        limit_msg = audio_duration_limit_message(duration, CFG.get("max_audio_duration_seconds"))
+        if limit_msg:
+            return fail(limit_msg)
         task_id = new_id()
         dest_dir = DATA_DIR / "tasks" / task_id
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -417,6 +434,7 @@ def build_app() -> FastAPI:
             "audio_name": audio_name,
             "audio_path": str(dest),
             "audio_duration": duration,
+            "avatar_type": avatar["type"],
             "created_at": now,
             "retain_from": now,
         })
@@ -453,6 +471,7 @@ def build_app() -> FastAPI:
             "progress_message": "已取消",
             "error_message": "",
             "finished_at": now,
+            "retain_from": now,
         })
         row = STORE.one("SELECT * FROM tasks WHERE task_id=?", (task_id,))
         return envelope(_task_public(row, avatar), "已取消")
@@ -469,6 +488,13 @@ def build_app() -> FastAPI:
             return fail("正在合成的任务不能重试")
         if not row.get("audio_path") or not Path(row["audio_path"]).exists():
             return fail("音频文件已丢失，无法重试")
+        if not avatar:
+            return fail("形象不存在")
+        if avatar.get("bake_status") != "ready":
+            return fail("形象还在转码，请稍后再提交")
+        limit_msg = audio_duration_limit_message(row.get("audio_duration"), CFG.get("max_audio_duration_seconds"))
+        if limit_msg:
+            return fail(limit_msg)
         now = iso(utc_now())
         STORE.update("tasks", "task_id", task_id, {
             "status": "wait",
@@ -618,8 +644,17 @@ def build_app() -> FastAPI:
                 out.write(part.read_bytes())
         if dest.stat().st_size != int(row["filesize"] or 0):
             return JSONResponse({"detail": "合并后文件大小与声明不一致"}, status_code=400)
+        try:
+            duration = media.probe_audio(dest)
+        except Exception:
+            purge_upload(STORE, DATA_DIR, upload_id)
+            return JSONResponse({"detail": "无法读取音频时长"}, status_code=400)
+        limit_msg = audio_duration_limit_message(duration, CFG.get("max_audio_duration_seconds"))
+        if limit_msg:
+            purge_upload(STORE, DATA_DIR, upload_id)
+            return JSONResponse({"detail": limit_msg}, status_code=400)
         STORE.update("uploads", "upload_id", upload_id, {"updated_at": iso(utc_now())})
-        return {"upload_id": upload_id, "filename": row["filename"]}
+        return {"upload_id": upload_id, "filename": row["filename"], "duration": duration}
 
     @app.delete("/api/uploads/{upload_id}")
     def upload_delete(upload_id: str):
@@ -687,7 +722,17 @@ def _ready_payload() -> dict[str, Any]:
         "gpu_busy": gpu_busy,
         "gpus": gpus,
         "worker_alive": worker_alive(DATA_DIR),
-        "features": {"max_synthesis_duration_seconds": 0},
+        "features": _features(),
+    }
+
+
+def _features() -> dict[str, Any]:
+    audio_limit = audio_duration_limit_seconds(CFG.get("max_audio_duration_seconds"))
+    return {
+        "max_synthesis_duration_seconds": audio_limit,
+        "max_audio_duration_seconds": audio_limit,
+        "max_video_duration_seconds": video_duration_limit_seconds(CFG.get("max_video_duration_seconds")),
+        "task_retain_days": int(CFG.get("task_retain_days") or 15),
     }
 
 
@@ -712,7 +757,7 @@ def _status_payload() -> dict[str, Any]:
         "gpu_busy": ready["gpu_busy"],
         "gpus": ready["gpus"],
         "worker_alive": worker_alive(DATA_DIR),
-        "features": {"max_synthesis_duration_seconds": 0},
+        "features": _features(),
     }
 
 
@@ -843,7 +888,26 @@ def _task_public(row: dict[str, Any] | None, avatar: dict[str, Any] | None) -> d
         "created_at": row["created_at"],
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
+        "expires_at": _task_expires_at(row),
+        "retain_days": int(CFG.get("task_retain_days") or 15),
     }
+
+
+def _task_avatar_kind(row: dict[str, Any], avatar: dict[str, Any] | None) -> str:
+    if avatar and avatar.get("type"):
+        return str(avatar["type"])
+    kind = str(row.get("avatar_type") or "").strip().lower()
+    return kind if kind in {"public", "private"} else "private"
+
+
+def _task_expires_at(row: dict[str, Any]) -> str | None:
+    if row.get("status") in {"wait", "run"}:
+        return None
+    base = parse_iso(row.get("retain_from") or row.get("finished_at") or row.get("created_at"))
+    if not base:
+        return None
+    days = int(CFG.get("task_retain_days") or 15)
+    return iso(base + timedelta(days=days))
 
 
 def _get_avatar(identifier: str, uid: str | None, admin: bool = False) -> dict[str, Any] | None:
@@ -866,7 +930,8 @@ def _get_task(task_id: str, uid: str | None, admin: bool = False) -> tuple[dict[
     avatar = STORE.one("SELECT * FROM avatars WHERE identifier=?", (row["avatar_identifier"],))
     if admin:
         return row, avatar
-    if avatar and avatar["type"] == "private":
+    kind = _task_avatar_kind(row, avatar)
+    if kind == "private":
         if not uid or row["user_id"] != uid:
             return None, None
     elif uid and row["user_id"] != uid:
@@ -897,8 +962,18 @@ def _media_task(task_id: str, request: Request, x_user_id: str | None, x_usernam
     if not row:
         raise HTTPException(404, detail="任务不存在")
     avatar = STORE.one("SELECT * FROM avatars WHERE identifier=?", (row["avatar_identifier"],))
-    if avatar and avatar["type"] == "private":
-        if not _can_access_avatar(request, avatar, x_user_id, x_username):
+    if _task_avatar_kind(row, avatar) == "private":
+        if avatar:
+            allowed = _can_access_avatar(request, avatar, x_user_id, x_username)
+        elif _gate_ok(request.cookies.get(COOKIE)):
+            allowed = True
+        else:
+            try:
+                uid = first_user(x_user_id, x_username)
+            except ValueError:
+                uid = None
+            allowed = bool(uid and uid == row.get("user_id"))
+        if not allowed:
             raise HTTPException(404, detail="任务不存在")
     return row, avatar
 
@@ -1010,10 +1085,23 @@ def _avatar_complete(upload_id: str) -> JSONResponse:
         for i in range(total):
             part = DATA_DIR / "uploads" / upload_id / f"{i:06d}.part"
             if not part.exists():
+                shutil.rmtree(folder, ignore_errors=True)
                 return JSONResponse(fail(f"分片 {i} 文件丢失"))
             out.write(part.read_bytes())
     if dest.stat().st_size != int(row["filesize"]):
+        shutil.rmtree(folder, ignore_errors=True)
         return JSONResponse(fail("合并后文件大小与声明不一致"))
+    try:
+        duration = float(media.probe(dest).get("duration") or 0)
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        purge_upload(STORE, DATA_DIR, upload_id)
+        return JSONResponse(fail("无法读取形象视频时长"))
+    limit_msg = video_duration_limit_message(duration, CFG.get("max_video_duration_seconds"))
+    if limit_msg:
+        shutil.rmtree(folder, ignore_errors=True)
+        purge_upload(STORE, DATA_DIR, upload_id)
+        return JSONResponse(fail(limit_msg))
     now = iso(utc_now())
     STORE.insert("avatars", {
         "identifier": ident,
