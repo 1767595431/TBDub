@@ -43,18 +43,18 @@ inference.py              # 占 GPU。重启接口或 Worker 都不要杀它
 
 | 脚本 | 作用 |
 |---|---|
-| `bash start_server.sh` | 起 Worker + 接口（末尾 `exec`，前台会占终端） |
-| `bash restart_api.sh` | 只重启接口 |
+| `bash start.sh` | **后台启动**接口 + Worker，关终端也继续跑 |
+| `bash stop.sh` | **关闭**接口 + Worker，不杀正在跑的 `inference.py` |
+| `bash logs.sh` | **实时日志**（接口 + Worker）。`bash logs.sh api` 只看接口 |
+| `bash start_server.sh` | 前台启动（占住当前终端） |
+| `bash restart_api.sh` | 只重启接口（前台） |
 | `bash restart_worker.sh` | 只重启 Worker，不杀正在跑的推理 |
-
-查进程只用 `server/procs.sh` 里的函数，**禁止** `pgrep -f server` / `pkill python`。
-
-后台示例：
 
 ```bash
 cd /root/AI/TBDub
-mkdir -p data
-nohup bash start_server.sh >> data/api.log 2>&1 &
+bash start.sh
+bash logs.sh
+bash stop.sh
 ```
 
 ---

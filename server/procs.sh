@@ -18,6 +18,18 @@ py_module_pids() {
   done
 }
 
+inference_pids() {
+  local pid cmd
+  for pid in /proc/[0-9]*; do
+    pid="${pid#/proc/}"
+    py_comm_ok "$pid" || continue
+    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+    case "$cmd" in
+      *inference.py*) printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
 api_pids() {
   local pid cmd
   for pid in /proc/[0-9]*; do
