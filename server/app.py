@@ -46,6 +46,8 @@ from .util import (
 )
 from .worker import (
     duration_text,
+    drop_upload_parts,
+    forget_audio_staging,
     purge_task,
     purge_upload,
     remaining_for,
@@ -406,40 +408,44 @@ def build_app() -> FastAPI:
         audio_path, audio_name = await _resolve_audio(form)
         if audio_path is None:
             return fail(audio_name)
+        upload_id = str(form.get("audio_upload_id") or "").strip()
         try:
-            duration = media.probe_audio(audio_path)
-        except Exception:
-            return fail("无法读取音频时长")
-        limit_msg = audio_duration_limit_message(duration, CFG.get("max_audio_duration_seconds"))
-        if limit_msg:
-            return fail(limit_msg)
-        task_id = new_id()
-        dest_dir = DATA_DIR / "tasks" / task_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / audio_name
-        shutil.move(str(audio_path), dest)
-        now = iso(utc_now())
-        STORE.insert("tasks", {
-            "task_id": task_id,
-            "task_name": task_name,
-            "user_id": uid,
-            "avatar_identifier": avatar_id,
-            "status": "wait",
-            "progress": 0,
-            "progress_message": "排队中",
-            "error_message": "",
-            "steps": steps,
-            "quality_label": quality["label"],
-            "mode": quality["mode"],
-            "audio_name": audio_name,
-            "audio_path": str(dest),
-            "audio_duration": duration,
-            "avatar_type": avatar["type"],
-            "created_at": now,
-            "retain_from": now,
-        })
-        row = STORE.one("SELECT * FROM tasks WHERE task_id=?", (task_id,))
-        return envelope(_task_public(row, avatar), "已加入合成队列")
+            try:
+                duration = media.probe_audio(audio_path)
+            except Exception:
+                return fail("无法读取音频时长")
+            limit_msg = audio_duration_limit_message(duration, CFG.get("max_audio_duration_seconds"))
+            if limit_msg:
+                return fail(limit_msg)
+            task_id = new_id()
+            dest_dir = DATA_DIR / "tasks" / task_id
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / audio_name
+            shutil.move(str(audio_path), dest)
+            now = iso(utc_now())
+            STORE.insert("tasks", {
+                "task_id": task_id,
+                "task_name": task_name,
+                "user_id": uid,
+                "avatar_identifier": avatar_id,
+                "status": "wait",
+                "progress": 0,
+                "progress_message": "排队中",
+                "error_message": "",
+                "steps": steps,
+                "quality_label": quality["label"],
+                "mode": quality["mode"],
+                "audio_name": audio_name,
+                "audio_path": str(dest),
+                "audio_duration": duration,
+                "avatar_type": avatar["type"],
+                "created_at": now,
+                "retain_from": now,
+            })
+            row = STORE.one("SELECT * FROM tasks WHERE task_id=?", (task_id,))
+            return envelope(_task_public(row, avatar), "已加入合成队列")
+        finally:
+            forget_audio_staging(STORE, DATA_DIR, upload_id, audio_path)
 
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str, request: Request, username: str | None = None, user_id: str | None = None):
@@ -653,6 +659,7 @@ def build_app() -> FastAPI:
         if limit_msg:
             purge_upload(STORE, DATA_DIR, upload_id)
             return JSONResponse({"detail": limit_msg}, status_code=400)
+        drop_upload_parts(DATA_DIR, upload_id)
         STORE.update("uploads", "upload_id", upload_id, {"updated_at": iso(utc_now())})
         return {"upload_id": upload_id, "filename": row["filename"], "duration": duration}
 

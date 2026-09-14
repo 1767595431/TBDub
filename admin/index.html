@@ -12,7 +12,7 @@
   <link rel="icon" href="favicon.png" type="image/png" sizes="512x512">
   <link rel="apple-touch-icon" href="favicon.png">
   <link rel="stylesheet" href="admin/assets/vendor/animate.min.css">
-  <link rel="stylesheet" href="admin/assets/style.css">
+  <link rel="stylesheet" href="admin/assets/style.css?v=upload-modal-2">
   <script>
     (async function () {
       var TAB = 'dh_admin_gate_tab';
@@ -171,13 +171,16 @@
         <section id="page-create" class="page">
           <div class="avatars-split-layout">
             <div class="avatars-list-col">
-              <div class="avatar-type-tabs" id="createAvatarTypeTabs">
-                <button type="button" class="tab active" data-avatar-tab="public">
-                  公共形象 <span class="chip" id="createAvatarTabPublicCount">0</span>
-                </button>
-                <button type="button" class="tab" data-avatar-tab="private">
-                  个人形象 <span class="chip" id="createAvatarTabPrivateCount">0</span>
-                </button>
+              <div class="avatar-toolbar">
+                <div class="avatar-type-tabs" id="createAvatarTypeTabs">
+                  <button type="button" class="tab active" data-avatar-tab="public">
+                    公共形象 <span class="chip" id="createAvatarTabPublicCount">0</span>
+                  </button>
+                  <button type="button" class="tab" data-avatar-tab="private">
+                    个人形象 <span class="chip" id="createAvatarTabPrivateCount">0</span>
+                  </button>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" id="btnOpenUploadCreate">上传形象</button>
               </div>
               <div class="avatar-private-filter hidden" id="createPrivateFilterWrap">
                 <input type="search" class="search-input" id="createPrivateSearch" placeholder="输入用户名筛选…">
@@ -334,6 +337,6 @@
   </div>
 
   <script src="admin/assets/fx.js"></script>
-  <script src="admin/assets/app.js?v=audio-3m-expire-1"></script>
+  <script src="admin/assets/app.js?v=upload-modal-2"></script>
 </body>
 </html>

@@ -1789,28 +1789,38 @@ function durationLimitMessage(kind, actualSec, maxSec) {
   return `${label}时长 ${formatDurationCn(actualSec)} 超过上限 ${formatDurationCn(maxSec)}`;
 }
 
-function probeFileDuration(file) {
+function probeFileDuration(file, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     if (!file) return reject(new Error('未选择文件'));
     const url = URL.createObjectURL(file);
     const isAudio = (file.type || '').startsWith('audio/') || /\.(wav|mp3|m4a|aac|flac|ogg)$/i.test(file.name);
     const el = document.createElement(isAudio ? 'audio' : 'video');
+    let settled = false;
     const cleanup = () => {
+      clearTimeout(timer);
+      el.onloadedmetadata = null;
+      el.onerror = null;
       el.removeAttribute('src');
-      el.load();
+      try { el.load(); } catch { /* ignore */ }
       URL.revokeObjectURL(url);
     };
+    const fail = (msg) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(msg));
+    };
+    const timer = setTimeout(() => fail('无法读取媒体时长'), timeoutMs);
     el.preload = 'metadata';
     el.onloadedmetadata = () => {
+      if (settled) return;
       const d = el.duration;
+      settled = true;
       cleanup();
       if (!Number.isFinite(d) || d <= 0) reject(new Error('无法读取媒体时长'));
       else resolve(d);
     };
-    el.onerror = () => {
-      cleanup();
-      reject(new Error('无法读取媒体时长'));
-    };
+    el.onerror = () => fail('无法读取媒体时长');
     el.src = url;
   });
 }
@@ -1857,10 +1867,23 @@ function setUpDock(open) {
   dock.setAttribute('aria-hidden', open ? 'false' : 'true');
 }
 
+function stripFx(el) {
+  if (!el) return;
+  [...el.classList].forEach((c) => {
+    if (c === 'animate__animated' || c.startsWith('animate__')) el.classList.remove(c);
+  });
+  el.style.removeProperty('--animate-duration');
+  el.style.removeProperty('--animate-delay');
+  el.style.removeProperty('opacity');
+  el.style.removeProperty('transform');
+  el.style.removeProperty('visibility');
+}
+
 function openUploadModal() {
   syncUpTypeUi();
   const overlay = $('#upModal');
   const inner = overlay?.querySelector('.up-dialog');
+  stripFx(inner);
   overlay?.classList.remove('hidden');
   overlay?.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
@@ -1879,11 +1902,13 @@ async function closeUploadModal() {
   overlay?.classList.add('hidden');
   overlay?.setAttribute('aria-hidden', 'true');
   document.body.style.overflow = '';
+  stripFx(inner);
 }
 
 async function addUpFiles(fileList) {
-  await ensureSystemStats();
   const files = [...(fileList || [])];
+  if (!files.length) return;
+  const pending = [];
   for (const file of files) {
     if (!VIDEO_EXTS.test(file.name)) {
       toast(`不支持的格式：${file.name}`, 'error');
@@ -1897,14 +1922,23 @@ async function addUpFiles(fileList) {
       toast(`${file.name} 超过 2GB`, 'error');
       continue;
     }
-    try {
-      await assertFileWithinLimit(file, 'video');
-    } catch (err) {
-      toast(`${file.name}：${err.message || '时长超过限制'}`, 'error');
-      continue;
-    }
     if (upDrafts.some((d) => d.file.name === file.name && d.file.size === file.size)) continue;
-    upDrafts.push({ id: `d${++upSeq}`, file, name: fileStem(file.name).slice(0, 80) });
+    const draft = { id: `d${++upSeq}`, file, name: fileStem(file.name).slice(0, 80), checking: true };
+    upDrafts.push(draft);
+    pending.push(draft);
+  }
+  renderUpDrafts();
+  if (!pending.length) return;
+  await ensureSystemStats();
+  for (const draft of pending) {
+    if (!upDrafts.some((d) => d.id === draft.id)) continue;
+    try {
+      await assertFileWithinLimit(draft.file, 'video');
+      draft.checking = false;
+    } catch (err) {
+      toast(`${draft.file.name}：${err.message || '时长超过限制'}`, 'error');
+      upDrafts = upDrafts.filter((d) => d.id !== draft.id);
+    }
   }
   renderUpDrafts();
 }
@@ -1923,16 +1957,17 @@ function renderUpDrafts() {
     }
     return;
   }
+  const checking = upDrafts.some((d) => d.checking);
   box.innerHTML = upDrafts.map((d) => `
     <div class="up-row" data-draft="${esc(d.id)}">
       <input class="name" data-draft-name="${esc(d.id)}" value="${esc(d.name)}" maxlength="80">
       <button type="button" class="rm" data-draft-rm="${esc(d.id)}" aria-label="移除">&times;</button>
-      <span class="meta">${esc(d.file.name)} · ${formatFileSize(d.file.size)}</span>
+      <span class="meta">${esc(d.file.name)} · ${formatFileSize(d.file.size)}${d.checking ? ' · 正在检测时长…' : ''}</span>
     </div>`).join('');
-  if (meta) meta.textContent = `已选 ${upDrafts.length} 个视频`;
+  if (meta) meta.textContent = checking ? `已选 ${upDrafts.length} 个视频，正在检测时长…` : `已选 ${upDrafts.length} 个视频`;
   if (start) {
-    start.disabled = false;
-    start.textContent = `开始上传（${upDrafts.length}）`;
+    start.disabled = checking;
+    start.textContent = checking ? '正在检测时长…' : `开始上传（${upDrafts.length}）`;
   }
 }
 
@@ -1987,8 +2022,8 @@ function enqueueDrafts() {
     toast('用户ID不能超过 64 个字符', 'error');
     return false;
   }
-  if (!upDrafts.length) {
-    toast('请先选择视频', 'error');
+  if (!upDrafts.length || upDrafts.some((d) => d.checking)) {
+    toast(upDrafts.some((d) => d.checking) ? '正在检测视频时长，请稍候' : '请先选择视频', 'error');
     return false;
   }
   for (const d of upDrafts) {
@@ -2151,6 +2186,7 @@ async function runAvatarUpload(job) {
 
 function bindUploadUi() {
   $('#btnOpenUpload')?.addEventListener('click', openUploadModal);
+  $('#btnOpenUploadCreate')?.addEventListener('click', openUploadModal);
   $('#upModalClose')?.addEventListener('click', closeUploadModal);
   $('#upModalCancel')?.addEventListener('click', closeUploadModal);
   $('#upModal')?.addEventListener('click', (e) => {
@@ -2637,6 +2673,7 @@ async function applyAudioFile(file, input) {
   } catch (_) {
     /* some browsers only allow files via the picker */
   }
+  if (label) label.textContent = `${file.name}（检测时长…）`;
   try {
     const d = await assertFileWithinLimit(file, 'audio');
     if (label) label.textContent = `${file.name}（${formatDurationCn(d)}）`;

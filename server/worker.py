@@ -229,6 +229,32 @@ def purge_upload(store: Store, data_dir: Path, upload_id: str) -> None:
     store.delete("uploads", "upload_id", upload_id)
 
 
+def drop_upload_parts(data_dir: Path, upload_id: str) -> None:
+    folder = Path(data_dir) / "uploads" / upload_id
+    if not folder.is_dir():
+        return
+    for part in folder.glob("*.part"):
+        try:
+            part.unlink()
+        except OSError:
+            pass
+
+
+def forget_audio_staging(store: Store, data_dir: Path, upload_id: str | None, staged: Path | None) -> None:
+    if upload_id:
+        purge_upload(store, data_dir, upload_id)
+        return
+    if staged is None:
+        return
+    parent = staged.parent
+    root = (Path(data_dir) / "uploads").resolve()
+    try:
+        if parent.resolve().parent == root and parent.name.startswith("direct-"):
+            _rmtree(parent)
+    except OSError:
+        pass
+
+
 def _rmtree(folder: Path) -> None:
     if not folder.exists():
         return
@@ -496,12 +522,12 @@ class Workers:
                 self._cleanup_once()
             except Exception as exc:
                 self.log(f"cleanup failed: {exc}")
-            self._stop.wait(3600)
+            self._stop.wait(600)
 
     def _cleanup_once(self) -> None:
         now = utc_now()
         retain_days = int(self.cfg["task_retain_days"])
-        expire_hours = int(self.cfg["upload_expire_hours"])
+        expire_hours = max(1, int(self.cfg["upload_expire_hours"]))
         cutoff = iso(now - timedelta(days=retain_days))
         expired = self.store.query(
             "SELECT * FROM tasks WHERE status NOT IN ('run','wait') AND retain_from < ?",
@@ -515,12 +541,32 @@ class Workers:
         )
         for item in stale:
             purge_upload(self.store, self.data_dir, item["upload_id"])
+        for item in self.store.query("SELECT upload_id FROM uploads"):
+            drop_upload_parts(self.data_dir, item["upload_id"])
         known = {item["upload_id"] for item in self.store.query("SELECT upload_id FROM uploads")}
         uploads_root = self.data_dir / "uploads"
+        orphan = 0
         if uploads_root.exists():
-            for child in uploads_root.iterdir():
+            oldest = time.time() - expire_hours * 3600
+            for child in list(uploads_root.iterdir()):
+                try:
+                    if child.stat().st_mtime > oldest:
+                        continue
+                except OSError:
+                    continue
                 if child.is_dir() and child.name not in known:
                     purge_upload(self.store, self.data_dir, child.name)
+                    orphan += 1
+                elif child.is_file():
+                    try:
+                        child.unlink()
+                        orphan += 1
+                    except OSError:
+                        pass
+        if expired or stale or orphan:
+            self.log(
+                f"cleanup removed tasks={len(expired)} uploads={len(stale)} orphans={orphan}"
+            )
 
     def _bake(self, row: dict) -> None:
         ident = row["identifier"]
