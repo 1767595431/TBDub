@@ -6,7 +6,7 @@
 - 形象上传 / 转码 / 作品排队
 - 给业务前端对接的 HTTP 接口
 
-官方单次推理说明见 [`README copy.md`](README%20copy.md)。换机安装、权重、进程红线见 [`部署安装文档.md`](部署安装文档.md)。业务前端对接见 [`TBDub_API接口文档.md`](TBDub_API接口文档.md)。
+官方单次推理说明见 [`README copy.md`](README%20copy.md)。换机安装、权重、进程红线见 [`部署安装文档.md`](部署安装文档.md)。业务前端对接见 [`TBDub_API接口文档.md`](TBDub_API接口文档.md)。无 GPU 模拟联调见 [`TBDub_模拟测试接口文档.md`](TBDub_模拟测试接口文档.md)。
 
 **不要改官方合成引擎**（`inference.py`、`preprocessing.py`、`video_utils.py`、`diffsynth/`、`dwpose_tools/`）。服务层只做裁工作视频、排队、进度、过期清理。
 

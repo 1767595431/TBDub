@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = ROOT / "config.yaml"
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
@@ -17,6 +25,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     data_dir = Path(data.get("data_dir") or "data")
     if not data_dir.is_absolute():
         data_dir = ROOT / data_dir
+    env_mock = _env_bool("TBDUB_MOCK_SYNTHESIS")
     return {
         "admin_key": str(data.get("admin_key") or "King"),
         "idle_seconds": int(data.get("idle_seconds") or 1800),
@@ -38,5 +47,8 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         if data.get("max_video_duration_seconds") is not None else 300,
         "max_audio_duration_seconds": int(data["max_audio_duration_seconds"])
         if data.get("max_audio_duration_seconds") is not None else 180,
+        # 无 GPU 联调：跳过 inference.py。环境变量 TBDUB_MOCK_SYNTHESIS 优先于配置文件
+        "mock_synthesis": env_mock if env_mock is not None else bool(data.get("mock_synthesis") or False),
+        "mock_duration_seconds": float(data.get("mock_duration_seconds") or 24),
         "root": ROOT,
     }

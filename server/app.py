@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import math
+import atexit
+import os
 import shutil
 import subprocess
 import sys
@@ -12,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-import torch
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -91,6 +92,11 @@ def build_app() -> FastAPI:
             (DATA_DIR / name).mkdir(exist_ok=True)
         # 合成 Worker 是独立进程。接口只负责在它不在时拉起，启停不影响正在跑的任务。
         _ensure_worker()
+
+    @app.on_event("shutdown")
+    def _shutdown() -> None:
+        if CFG.get("mock_synthesis"):
+            _stop_spawned_worker()
 
     @app.middleware("http")
     async def _touch_session(request: Request, call_next):
@@ -690,34 +696,70 @@ def _preprocess_ready(avatar: dict[str, Any] | None) -> bool:
     return False
 
 
+_WORKER_PROC: subprocess.Popen | None = None
+
+
 def _ensure_worker() -> None:
+    global _WORKER_PROC
     if worker_alive(DATA_DIR) or worker_process_alive(DATA_DIR):
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     log_file = (DATA_DIR / "worker.log").open("a", encoding="utf-8")
-    subprocess.Popen(
-        [sys.executable, "-m", "server.worker"],
-        cwd=str(ROOT),
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    kwargs: dict[str, Any] = {
+        "cwd": str(ROOT),
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": os.environ.copy(),
+    }
+    # 模拟联调跟启动窗口同生共死；正式环境仍拆开进程组，避免重启接口杀掉 Worker。
+    if CFG.get("mock_synthesis"):
+        _WORKER_PROC = subprocess.Popen([sys.executable, "-m", "server.worker"], **kwargs)
+        return
+    try:
+        subprocess.Popen([sys.executable, "-m", "server.worker"], start_new_session=True, **kwargs)
+    except TypeError:
+        subprocess.Popen([sys.executable, "-m", "server.worker"], **kwargs)
+
+
+def _stop_spawned_worker() -> None:
+    global _WORKER_PROC
+    proc = _WORKER_PROC
+    _WORKER_PROC = None
+    if not proc or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+atexit.register(lambda: _stop_spawned_worker() if CFG.get("mock_synthesis") else None)
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
 
 
 def _ready_payload() -> dict[str, Any]:
     ffmpeg_ok = media.have_ffmpeg()
+    mock = bool(CFG.get("mock_synthesis"))
     ckpt = ROOT / "checkpoints"
-    model_ok = all((
+    model_ok = mock or all((
         (ckpt / "tbdub_base.safetensors").exists(),
         (ckpt / "tbdub_finetune.safetensors").exists(),
         (ckpt / "tbdub_student.safetensors").exists(),
         (ckpt / "hubert-large-ll60k").exists(),
     ))
-    gpu_ok = bool(torch.cuda.is_available())
+    gpu_ok = mock or _cuda_available()
     current = running_task(STORE)
     gpu_busy = current is not None
     gpus = []
-    if gpu_ok:
+    if gpu_ok or mock:
         gpus.append({
             "id": 0,
             "busy": gpu_busy,
@@ -764,6 +806,7 @@ def _status_payload() -> dict[str, Any]:
         "gpu_busy": ready["gpu_busy"],
         "gpus": ready["gpus"],
         "worker_alive": worker_alive(DATA_DIR),
+        "mock_synthesis": bool(CFG.get("mock_synthesis")),
         "features": _features(),
     }
 

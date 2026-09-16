@@ -112,3 +112,23 @@ def make_audio_preview(src: Path, dest: Path, bitrate: str = "2M") -> None:
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(dest),
     ])
+
+
+def make_looped_result(video: Path, audio: Path, dest: Path, bitrate: str = "2M") -> None:
+    """Loop a silent avatar clip to the driving audio length and mux sound. Used by mock synthesis."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    duration = probe_audio(audio)
+    if duration <= 0:
+        raise RuntimeError("无法读取音频时长")
+    run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-stream_loop", "-1", "-i", str(video),
+        "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-t", f"{duration:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-b:v", bitrate,
+        "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        "-shortest",
+        str(dest),
+    ])

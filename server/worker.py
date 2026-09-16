@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 import signal
@@ -12,11 +11,17 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Callable
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
 from . import media
 from .config import load_config
 from .db import Store
 from .util import (
     current_run_log,
+    estimate_clips,
     eta_seconds,
     iso,
     last_step_tqdm,
@@ -37,6 +42,7 @@ DWPOSE_RE = re.compile(r"dwpose\s+(\d+)/(\d+)\s+frames", re.I)
 HEARTBEAT_NAME = "worker.heartbeat"
 PIDFILE_NAME = "worker.pid"
 HEARTBEAT_TTL = 12.0
+MOCK_MARK = "[TBDub] mock-synthesis"
 
 
 def heartbeat_path(data_dir: Path) -> Path:
@@ -89,7 +95,12 @@ def worker_process_alive(data_dir: Path) -> bool:
             pid = 0
         if is_worker_pid(pid):
             return True
-    return any(is_worker_pid(int(entry.name)) for entry in Path("/proc").iterdir() if entry.name.isdigit())
+        if os.name == "nt" and pid_alive(pid):
+            return True
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return False
+    return any(is_worker_pid(int(entry.name)) for entry in proc_root.iterdir() if entry.name.isdigit())
 
 
 def remaining_for(
@@ -113,7 +124,14 @@ def remaining_for(
     tid = task.get("task_id")
     root = Path(data_dir) if data_dir else Path(__file__).resolve().parent.parent / "data"
     if tid:
-        live = remaining_from_log_path(root / "tasks" / tid / "task.log", task)
+        log_path = root / "tasks" / tid / "task.log"
+        data = current_run_log(log_path)
+        if MOCK_MARK in data:
+            eta = task.get("eta_seconds")
+            if eta is None:
+                return 0.0
+            return max(0.0, float(eta))
+        live = remaining_from_log_path(log_path, task)
         if live is not None:
             return live
     return remaining_from_stage(task, has_preprocess=bool(ready), avatar_duration=avatar_duration)
@@ -127,12 +145,23 @@ def duration_text(task: dict) -> str:
 def pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
+    pid = int(pid)
+    if os.name == "nt":
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x100000, 0, pid)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
     try:
-        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="ignore")
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="ignore")
         state = stat.split(")")[-1].split()[0]
         if state == "Z":
             return False
-        os.kill(int(pid), 0)
+        os.kill(pid, 0)
         return True
     except (OSError, IndexError):
         return False
@@ -193,6 +222,20 @@ def kill_pid(pid: int | None, timeout: float = 8.0) -> None:
     if not pid or not pid_alive(pid) or int(pid) == os.getpid():
         return
     pid = int(pid)
+    if os.name == "nt":
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+        deadline = time.time() + timeout
+        while time.time() < deadline and pid_alive(pid):
+            time.sleep(0.2)
+        if pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        return
     try:
         pgid = os.getpgid(pid)
     except OSError:
@@ -356,10 +399,11 @@ class Workers:
     def _lock_pidfile(self) -> None:
         path = pidfile_path(self.data_dir)
         self._pid_fd = path.open("w")
-        try:
-            fcntl.flock(self._pid_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise SystemExit("合成 Worker 已在运行") from exc
+        if fcntl is not None:
+            try:
+                fcntl.flock(self._pid_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise SystemExit("合成 Worker 已在运行") from exc
         self._pid_fd.write(str(os.getpid()))
         self._pid_fd.flush()
 
@@ -393,6 +437,21 @@ class Workers:
 
     def _reap_dead_runs(self) -> None:
         for task in self.store.query("SELECT * FROM tasks WHERE status='run'"):
+            if self.cfg.get("mock_synthesis"):
+                try:
+                    self._recover_run(task)
+                except Exception as exc:
+                    now = iso(utc_now())
+                    self.store.update("tasks", "task_id", task["task_id"], {
+                        "status": "error",
+                        "progress_message": "合成失败",
+                        "error_message": str(exc),
+                        "finished_at": now,
+                        "retain_from": now,
+                        "pid": None,
+                    })
+                    self._append_log(task["task_id"], f"ERROR {exc}\n")
+                continue
             if is_inference_pid(task.get("pid"), task["task_id"]):
                 continue
             live = next(
@@ -468,6 +527,12 @@ class Workers:
             running = running_task(self.store)
             if running:
                 try:
+                    if self.cfg.get("mock_synthesis"):
+                        if self._current_task == running["task_id"]:
+                            self._stop.wait(1.0)
+                            continue
+                        self._recover_run(running)
+                        continue
                     live = running.get("pid")
                     if not is_inference_pid(live, running["task_id"]):
                         found = self._live_pid_for_task(running["task_id"])
@@ -491,7 +556,7 @@ class Workers:
                     self._append_log(running["task_id"], f"ERROR {exc}\n")
                 continue
             live_pids = iter_inference_pids()
-            if live_pids:
+            if live_pids and not self.cfg.get("mock_synthesis"):
                 if any(self._protect_inference(pid) for pid in live_pids):
                     self._stop.wait(1.0)
                     continue
@@ -677,6 +742,9 @@ class Workers:
             return
         out_dir = self.data_dir / "tasks" / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
+        if self.cfg.get("mock_synthesis"):
+            self._mock_synthesize(row, avatar, audio, started)
+            return
         log_path = out_dir / "task.log"
         root = Path(self.cfg["root"])
         checkpoints = root / "checkpoints"
@@ -785,8 +853,135 @@ class Workers:
 
         self._finish_synthesis(task_id, row, avatar, cache, code)
 
+    def _mock_total_seconds(self, mode: str) -> float:
+        total = max(8.0, float(self.cfg.get("mock_duration_seconds") or 24))
+        if mode == "teacher":
+            total *= 1.5
+        return total
+
+    def _mock_progress_at(
+        self,
+        frac: float,
+        mode: str,
+        has_cache: bool,
+        clips: int,
+        steps: int,
+    ) -> tuple[float, str]:
+        infer = "超高质量推理中" if mode == "teacher" else "高质量推理中"
+        a1 = 0.12
+        a2 = 0.20 if has_cache else 0.32
+        a3 = 0.85
+        if frac < a1:
+            inner = frac / max(0.001, a1)
+            return round(2 + inner * 8, 1), "正在加载模型与环境（阶段 1/5）"
+        if frac < a2:
+            inner = (frac - a1) / max(0.001, a2 - a1)
+            if has_cache:
+                return round(10 + inner * 12, 1), "复用形象预处理（阶段 2/5）"
+            current = min(20, max(1, int(inner * 20)))
+            return round(10 + inner * 12, 1), f"首次合成，正在检测人脸（{current}/20）（阶段 2/5）"
+        if frac < a3:
+            inner = (frac - a2) / max(0.001, a3 - a2)
+            clips = max(1, clips)
+            steps = max(1, steps)
+            total_units = clips * steps
+            unit = min(total_units, max(1, int(inner * total_units) + 1))
+            clip_i = min(clips, 1 + (unit - 1) // steps)
+            step_i = 1 + (unit - 1) % steps
+            pct = 22.0 + inner * 66.0
+            return round(min(pct, 87.9), 1), f"{infer}（片段 {clip_i}/{clips}，第 {step_i}/{steps} 步）（阶段 3/5）"
+        inner = (frac - a3) / max(0.001, 1.0 - a3)
+        return round(88.0 + inner * 8.0, 1), "正在解码并贴回成片（阶段 4/5）"
+
+    def _mock_synthesize(self, row: dict, avatar: dict, audio: Path, started: str) -> None:
+        task_id = row["task_id"]
+        mode = row.get("mode") or "student"
+        out_dir = self.data_dir / "tasks" / task_id
+        cache = self.data_dir / "avatars" / avatar["identifier"] / "preprocess.pkl"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        has_cache = cache.exists() and cache.stat().st_size > 0
+        total = self._mock_total_seconds(mode)
+        clips = estimate_clips(row.get("audio_duration"))
+        steps = 30 if mode == "teacher" else 2
+        started_ts = time.time()
+        self._current_task = task_id
+        self.store.update("tasks", "task_id", task_id, {"eta_seconds": total, "pid": None})
+        self._append_log(task_id, f"[TBDub] run-start {started}\n{MOCK_MARK}\n")
+        self.log(f"mock synthesis start task={task_id} seconds={total:.0f}")
+        try:
+            while True:
+                if self._kill_if_cancelled(task_id):
+                    return
+                if self._stop.is_set():
+                    self.store.update("tasks", "task_id", task_id, {
+                        "status": "wait",
+                        "progress": 0,
+                        "progress_message": "排队中",
+                        "started_at": None,
+                        "pid": None,
+                        "eta_seconds": None,
+                    })
+                    self.log(f"mock synthesis interrupted, requeued task={task_id}")
+                    return
+                elapsed = time.time() - started_ts
+                frac = min(1.0, elapsed / total)
+                remain = max(0.0, total - elapsed)
+                progress, message = self._mock_progress_at(frac, mode, has_cache, clips, steps)
+                self.store.update("tasks", "task_id", task_id, {
+                    "progress": progress,
+                    "progress_message": message,
+                    "eta_seconds": remain,
+                })
+                if frac >= 1.0:
+                    break
+                self._stop.wait(0.4)
+
+            video = Path(avatar.get("preview_path") or avatar["source_path"])
+            if not video.exists():
+                video = Path(avatar["source_path"])
+            if not video.exists():
+                raise RuntimeError("形象视频不存在，无法模拟合成")
+            raw = out_dir / f"{task_id}_tbdub.mp4"
+            if self._kill_if_cancelled(task_id):
+                return
+            self.store.update("tasks", "task_id", task_id, {
+                "progress": 96,
+                "progress_message": "正在导出预览（阶段 5/5）",
+                "eta_seconds": 8,
+            })
+            self._append_log(task_id, f"{MOCK_MARK} writing {raw.name}\n")
+            media.make_looped_result(video, audio, raw, self.cfg["preview_bitrate"])
+            if not has_cache:
+                cache.write_bytes(b"mock-preprocess")
+            if self._kill_if_cancelled(task_id):
+                return
+            self._finish_synthesis(task_id, row, avatar, cache, 0)
+            self.log(f"mock synthesis done task={task_id}")
+        finally:
+            if self._current_task == task_id:
+                self._current_task = None
+
     def _recover_run(self, row: dict) -> None:
         task_id = row["task_id"]
+        if self.cfg.get("mock_synthesis"):
+            raw = self._result_file(task_id)
+            if raw.exists():
+                avatar = self.store.one("SELECT * FROM avatars WHERE identifier=?", (row["avatar_identifier"],)) or {}
+                cache = Path(avatar["preprocess_path"] or "") if avatar.get("preprocess_path") else (
+                    self.data_dir / "avatars" / row["avatar_identifier"] / "preprocess.pkl"
+                )
+                self._finish_synthesis(task_id, row, avatar, cache, 0)
+                return
+            self.store.update("tasks", "task_id", task_id, {
+                "status": "wait",
+                "progress": 0,
+                "progress_message": "排队中",
+                "started_at": None,
+                "pid": None,
+                "eta_seconds": None,
+            })
+            self.log(f"requeued interrupted mock synthesis task={task_id}")
+            return
         live = self._live_pid_for_task(task_id)
         if live:
             self.store.update("tasks", "task_id", task_id, {"pid": live, "status": "run"})

@@ -1129,19 +1129,22 @@ async function checkReady() {
       return;
     }
     const { data } = await api('/api/system/ready');
+    const status = await api('/api/system/status').catch(() => ({ data: {} }));
     const feat = data?.data?.features;
     if (feat) {
       systemStats = { ...(systemStats || {}), features: feat };
       applyMediaLimitHints();
     }
     const ok = data?.data?.ready;
+    const mock = !!status?.data?.data?.mock_synthesis;
     $('#readyChip').className = 'chip ' + (ok ? 'ok' : 'bad');
-    $('#readyChip').textContent = ok ? '● 服务就绪' : '● 未就绪';
+    $('#readyChip').textContent = ok ? (mock ? '● 模拟合成' : '● 服务就绪') : '● 未就绪';
     $('#statusDot').className = 'status-dot ' + (ok ? 'ok' : 'bad');
     if (data?.data?.checks) {
-      const labels = { ffmpeg: 'FFmpeg', gpu: 'GPU', model: '合成模型' };
+      const labels = { ffmpeg: 'FFmpeg', gpu: mock ? 'GPU（模拟）' : 'GPU', model: mock ? '合成模型（模拟）' : '合成模型' };
       setBarHtml(
         $('#healthChips'),
+        (mock ? '<span class="health-chip ok">✓ 模拟合成（未跑 GPU）</span>' : '') +
         Object.entries(data.data.checks)
           .map(([k, v]) => `<span class="health-chip ${v ? 'ok' : 'fail'}">${v ? '✓' : '✗'} ${labels[k] || k}</span>`)
           .join(''),
@@ -1155,7 +1158,8 @@ async function checkReady() {
         gpus.length
           ? gpus.map((g) => {
               const busy = !!g.busy;
-              return `<span class="health-chip ${busy ? 'fail' : 'ok'}">GPU ${g.id} ${busy ? '合成中' : '空闲'}</span>`;
+              const name = mock ? '模拟' : `GPU ${g.id}`;
+              return `<span class="health-chip ${busy ? 'fail' : 'ok'}">${name} ${busy ? '合成中' : '空闲'}</span>`;
             }).join('')
           : '<span class="health-chip fail">未配置</span>',
       );
