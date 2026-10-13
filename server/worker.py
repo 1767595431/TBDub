@@ -608,8 +608,14 @@ class Workers:
         )
         for item in stale:
             purge_upload(self.store, self.data_dir, item["upload_id"])
-        for item in self.store.query("SELECT upload_id FROM uploads"):
-            drop_upload_parts(self.data_dir, item["upload_id"])
+        # 只清理"已合并完成"的上传：合并后的文件落在 uploads/<id>/<filename>，
+        # 而仍在收分片的上传目录里只有 *.part。原实现对每个 uploads 行无条件删分片，
+        # 会把正在上传的大文件（>10 分钟）的分片删掉，complete 时报"分片 N 文件丢失"。
+        for item in self.store.query("SELECT upload_id, filename FROM uploads"):
+            folder = self.data_dir / "uploads" / item["upload_id"]
+            name = item["filename"] or ""
+            if name and (folder / name).is_file():
+                drop_upload_parts(self.data_dir, item["upload_id"])
         known = {item["upload_id"] for item in self.store.query("SELECT upload_id FROM uploads")}
         uploads_root = self.data_dir / "uploads"
         orphan = 0

@@ -643,10 +643,15 @@ def build_app() -> FastAPI:
         row = STORE.one("SELECT * FROM uploads WHERE upload_id=? AND kind='audio'", (upload_id,))
         if not row:
             return JSONResponse({"detail": "上传任务不存在"}, status_code=404)
-        received = set(STORE.loads(row["received"], []))
         total = int(row["total_chunks"] or 0)
-        if len(received) != total:
-            return JSONResponse({"detail": "分片不完整"}, status_code=400)
+        # 以磁盘上的分片文件为准：并发上传时 received 列表存在读改写竞态，
+        # 不能拿它当唯一依据，否则偶发丢一次计数就误报"分片不完整"。
+        parts_dir = DATA_DIR / "uploads" / upload_id
+        missing = [i for i in range(total) if not (parts_dir / f"{i:06d}.part").is_file()]
+        if missing:
+            shown = ", ".join(str(i) for i in missing[:5])
+            more = f" 等 {len(missing)} 片" if len(missing) > 5 else ""
+            return JSONResponse({"detail": f"分片 {shown}{more} 文件丢失（请重新上传）"}, status_code=400)
         dest = DATA_DIR / "uploads" / upload_id / row["filename"]
         with dest.open("wb") as out:
             for i in range(total):
@@ -1122,10 +1127,14 @@ def _avatar_complete(upload_id: str) -> JSONResponse:
     row = STORE.one("SELECT * FROM uploads WHERE upload_id=? AND kind='avatar'", (upload_id,))
     if not row:
         return JSONResponse(fail("上传任务不存在"))
-    received = set(STORE.loads(row["received"], []))
     total = int(row["total_chunks"])
-    if len(received) != total:
-        return JSONResponse(fail("分片不完整"))
+    # 同上：以磁盘实际分片为准，避免并发上传时的计数竞态误报。
+    parts_dir = DATA_DIR / "uploads" / upload_id
+    missing = [i for i in range(total) if not (parts_dir / f"{i:06d}.part").is_file()]
+    if missing:
+        shown = ", ".join(str(i) for i in missing[:5])
+        more = f" 等 {len(missing)} 片" if len(missing) > 5 else ""
+        return JSONResponse(fail(f"分片 {shown}{more} 文件丢失（请重新上传）"))
     ident = new_avatar_id()
     folder = DATA_DIR / "avatars" / ident
     folder.mkdir(parents=True)

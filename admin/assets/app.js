@@ -2170,6 +2170,49 @@ function cancelUploadJob(job) {
   renderUploadChrome();
 }
 
+// 分片上传：逐片重试 + 有限并发。
+// 这台服务器的入站带宽是"按连接"限速的（实测单连接 ~0.4–0.5MB/s，3 并发可到 ~1.6MB/s），
+// 串行传 1GB 要几十分钟；而链路一抖就会让整单作废。所以这里做两件事：
+//   1) 并发上传分片（UPLOAD_PARALLEL）；
+//   2) 每片失败后按 1s/2s/4s 退避重试（UPLOAD_CHUNK_RETRIES），只重传这一片。
+const UPLOAD_PARALLEL = 3;
+const UPLOAD_CHUNK_RETRIES = 3;
+
+async function uploadChunksParallel(total, sendOne, { isCancelled, onProgress } = {}) {
+  let next = 0;
+  let done = 0;
+  const worker = async () => {
+    for (;;) {
+      if (isCancelled?.()) throw new Error('已取消');
+      const i = next++;
+      if (i >= total) return;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= UPLOAD_CHUNK_RETRIES; attempt++) {
+        if (isCancelled?.()) throw new Error('已取消');
+        try {
+          await sendOne(i);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (isCancelled?.()) throw new Error('已取消');
+          if (attempt < UPLOAD_CHUNK_RETRIES) {
+            await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
+          }
+        }
+      }
+      if (lastErr) throw new Error(`第 ${i + 1}/${total} 片上传失败：${lastErr.message || '网络异常'}`);
+      done++;
+      onProgress?.(done, total);
+    }
+  };
+  const results = await Promise.allSettled(
+    Array.from({ length: Math.min(UPLOAD_PARALLEL, total) }, () => worker())
+  );
+  const bad = results.find((r) => r.status === 'rejected');
+  if (bad) throw bad.reason;
+}
+
 async function runAvatarUpload(job) {
   let uid = '';
   const abortCtrl = new AbortController();
@@ -2195,8 +2238,7 @@ async function runAvatarUpload(job) {
     if (!uid) throw new Error('未返回上传ID');
     if (job.cancelled) throw new Error('已取消');
     job.uploadId = uid;
-    for (let i = 0; i < total; i++) {
-      if (job.cancelled) throw new Error('已取消');
+    await uploadChunksParallel(total, async (i) => {
       const c = new FormData();
       c.append('stage', 'chunk');
       c.append('upload_id', uid);
@@ -2205,9 +2247,13 @@ async function runAvatarUpload(job) {
       c.append('chunk', file.slice(i * UPLOAD_CHUNK, (i + 1) * UPLOAD_CHUNK));
       const { data: cr } = await api('/api/avatars/upload', { method: 'POST', body: c, ...uploadOpts });
       if (!cr || cr.code !== 0) throw new Error(cr?.msg || cr?.detail || '分片上传失败');
-      job.progress = Math.round(((i + 1) / total) * 100);
-      renderUploadChrome();
-    }
+    }, {
+      isCancelled: () => job.cancelled,
+      onProgress: (done) => {
+        job.progress = Math.round((done / total) * 100);
+        renderUploadChrome();
+      },
+    });
     if (job.cancelled) throw new Error('已取消');
     const done = new FormData();
     done.append('stage', 'complete');
@@ -2221,7 +2267,10 @@ async function runAvatarUpload(job) {
     job.status = 'error';
     job.error = job.cancelled ? '已取消' : (err.message || '上传失败');
     if (!job.cancelled) toast(`${job.name}：${job.error}`, 'error');
-    abortAvatarUpload(uid || job.uploadId);
+    // 失败时不再立刻 abort：分片留在服务端（24 小时后由 Worker 自动清理），
+    // 否则一次网络抖动就会把已经传了几十分钟的分片全部作废。
+    // 只有用户主动取消时才真的把会话删掉。
+    if (job.cancelled) abortAvatarUpload(uid || job.uploadId);
     job.uploadId = '';
   } finally {
     job.abortCtrl = null;
@@ -2376,8 +2425,7 @@ async function uploadAudioInChunks(file, { signal, onProgress } = {}) {
   const total = Number(ir.total_chunks) || Math.max(1, Math.ceil(file.size / chunkSize));
   if (!uid) throw new Error('未返回上传ID');
   try {
-    for (let i = 0; i < total; i++) {
-      if (signal?.aborted) throw new Error('已取消');
+    await uploadChunksParallel(total, async (i) => {
       const blob = file.slice(i * chunkSize, (i + 1) * chunkSize);
       const { ok: cok, data: cr } = await api(`/api/uploads/${encodeURIComponent(uid)}/chunks/${i}`, {
         method: 'PUT',
@@ -2386,8 +2434,10 @@ async function uploadAudioInChunks(file, { signal, onProgress } = {}) {
         timeoutMs: 180000,
       });
       if (!cok) throw new Error(uploadErrorMessage(cr, '分片上传失败'));
-      onProgress?.(Math.round(((i + 1) / total) * 100), i + 1, total);
-    }
+    }, {
+      isCancelled: () => !!signal?.aborted,
+      onProgress: (done) => onProgress?.(Math.round((done / total) * 100), done, total),
+    });
     const { ok: dok, data: dr } = await api(`/api/uploads/${encodeURIComponent(uid)}/complete`, {
       method: 'POST',
       signal,
@@ -2397,7 +2447,8 @@ async function uploadAudioInChunks(file, { signal, onProgress } = {}) {
     onProgress?.(100, total, total);
     return uid;
   } catch (err) {
-    abortGenericUpload(uid);
+    // 同上：只有用户主动取消才清理会话，偶发失败保留分片，避免整单重来。
+    if (signal?.aborted) abortGenericUpload(uid);
     throw err;
   }
 }
