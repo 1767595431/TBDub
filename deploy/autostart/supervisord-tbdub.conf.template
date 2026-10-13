@@ -1,0 +1,49 @@
+; TBDub 服务开机自启 —— supervisord 环境（容器镜像通常自带）
+;
+; 安装：bash deploy/autostart/install_autostart.sh
+; 生效：supervisorctl reread && supervisorctl update
+;
+; 三条本仓库的硬性规则在这里的体现：
+;   1. stopasgroup=false / killasgroup=false —— 停 API 时不要把 Worker 和
+;      正在跑的 inference.py 一起带走（"重启接口禁止杀掉推理"）。
+;   2. API 用 start_server.sh 前台启动（它内部先确保 Worker 在，再 exec python -m server），
+;      绝不加 uvicorn --reload。
+;   3. 日志仍然写 data/api.log / data/worker.log，保持 `bash logs.sh` 可用。
+;
+; priority 小的先启动：先 Worker 后 API，API 启动时探测到 Worker 已在，就不会再拉一份。
+
+[program:tbdub-worker]
+command=__PY__ -m server.worker
+directory=__REPO__
+priority=10
+autostart=true
+autorestart=true
+startsecs=10
+startretries=5
+stopsignal=TERM
+stopwaitsecs=30
+stopasgroup=false
+killasgroup=false
+redirect_stderr=true
+stdout_logfile=__REPO__/data/worker.log
+stdout_logfile_maxbytes=50MB
+stdout_logfile_backups=3
+environment=PYTHONUNBUFFERED="1",MALLOC_ARENA_MAX="2"
+
+[program:tbdub-api]
+command=/bin/bash __REPO__/start_server.sh
+directory=__REPO__
+priority=20
+autostart=true
+autorestart=true
+startsecs=20
+startretries=5
+stopsignal=TERM
+stopwaitsecs=30
+stopasgroup=false
+killasgroup=false
+redirect_stderr=true
+stdout_logfile=__REPO__/data/api.log
+stdout_logfile_maxbytes=50MB
+stdout_logfile_backups=3
+environment=PYTHONUNBUFFERED="1"

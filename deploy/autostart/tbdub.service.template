@@ -1,0 +1,30 @@
+# TBDub 服务开机自启 —— systemd 环境（虚拟机/物理机）
+#
+# 安装：bash deploy/autostart/install_autostart.sh
+# 或手工：sed "s|__REPO__|/root/AI/TBDub|g" tbdub.service.template > /etc/systemd/system/tbdub.service
+#         systemctl daemon-reload && systemctl enable --now tbdub
+#
+# KillMode=process 是关键：重启/停止本单元只杀主进程（API），
+# 不会连带杀掉 Worker 与正在跑的 inference.py（本仓库硬性规则）。
+#
+# 本单元只管理"接口 + 拉起 Worker"；正在跑的合成进程刻意不受管理，
+# 这样 `systemctl restart tbdub` 不会毁掉一条跑了半小时的任务。
+
+[Unit]
+Description=TBDub 数字人配音服务（FastAPI 接口 + Worker）
+Documentation=file://__REPO__/部署安装文档.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO__
+ExecStart=/bin/bash __REPO__/start_server.sh
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
