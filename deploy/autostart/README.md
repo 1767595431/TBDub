@@ -1,12 +1,29 @@
 # 开机自启
 
-`bash deploy/autostart/install_autostart.sh` —— 自动识别环境并装好，`--uninstall` 取消。
+```bash
+bash deploy/autostart/install_autostart.sh              # 默认：只有检测到 systemd 才装
+bash deploy/autostart/install_autostart.sh --youyun     # 优云智慧算平台专用（supervisord）
+bash deploy/autostart/install_autostart.sh --cron       # crontab @reboot（需 cron 守护在跑）
+bash deploy/autostart/install_autostart.sh --uninstall  # 取消
+```
 
-| 环境 | 机制 | 落地位置 |
+## ⚠️ 先判断"这台机器适不适用"，不要盲目装
+
+| 机器 | 机制 | 通用性 |
 |---|---|---|
-| 容器镜像（自带 supervisord，**本机就是这种**：无 systemd、无 cron） | supervisord | `/etc/supervisor/conf.d/tbdub.conf` |
-| 虚拟机 / 物理机 | systemd | `/etc/systemd/system/tbdub.service` |
-| 以上都没有 | crontab `@reboot` | 当前用户 crontab（需要 cron 服务在跑） |
+| 装了 systemd 的虚拟机 / 物理机 | systemd | **通用做法**，默认就会用这个 |
+| **优云智慧算平台**的容器 Pod（镜像自带 supervisord） | supervisord | **仅该平台适用**，别的服务器不适用 |
+| 确认本机 cron 守护在跑的机器 | crontab `@reboot` | 通用，但依赖 cron 守护 |
+
+**默认行为**：脚本只检测 systemd。
+有 systemd → 直接装 systemd 单元；
+**没有 systemd → 脚本什么都不改**，只打印提示，要求先确认"这台机器是不是优云智慧算平台、
+该镜像是不是用 supervisord 管服务"，确认后才用 `--youyun` 显式安装。不适用就别做自启
+（手工 `bash start.sh` / `stop.sh` 一样能用）。
+
+> 原因：supervisord 这条路是**优云智慧算平台容器镜像特有的**（它的 entrypoint 会起 supervisord，
+> `[include] /etc/supervisor/conf.d/*.conf`）。换到别的服务器上既没有 supervisord、也可能有 systemd，
+> 套过去只会白折腾甚至把启动流程搞乱。
 
 ## ⚠️ 装了自启之后，启停方式会变（这是守护进程的正常表现）
 
