@@ -1771,7 +1771,7 @@ function maxAudioSeconds() {
     ?? systemStats?.features?.max_synthesis_duration_seconds,
   );
   if (Number.isFinite(n)) return n > 0 ? n : 0;
-  return 180;
+  return 300;
 }
 
 function maxVideoSeconds() {

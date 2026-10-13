@@ -46,7 +46,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         "max_video_duration_seconds": int(data["max_video_duration_seconds"])
         if data.get("max_video_duration_seconds") is not None else 300,
         "max_audio_duration_seconds": int(data["max_audio_duration_seconds"])
-        if data.get("max_audio_duration_seconds") is not None else 180,
+        if data.get("max_audio_duration_seconds") is not None else 300,
         # 无 GPU 联调：跳过 inference.py。环境变量 TBDUB_MOCK_SYNTHESIS 优先于配置文件
         "mock_synthesis": env_mock if env_mock is not None else bool(data.get("mock_synthesis") or False),
         "mock_duration_seconds": float(data.get("mock_duration_seconds") or 24),

@@ -157,7 +157,7 @@ http://10.60.19.103:8811/api/avatars?type=public
 | 种类 | 支持后缀 | 大小上限 | 时长上限 |
 |---|---|---|---|
 | 形象视频 | `.mp4` `.mov` `.mkv` `.webm` `.avi` `.mxf` | 2GB | **5 分钟**（`config.yaml` 的 `max_video_duration_seconds`，默认 300；`0` 表示不限制） |
-| 驱动音频 | `.wav` `.mp3` `.m4a` `.aac` `.flac` `.ogg` | 300MB | **3 分钟**（`max_audio_duration_seconds`，默认 180；`0` 表示不限制） |
+| 驱动音频 | `.wav` `.mp3` `.m4a` `.aac` `.flac` `.ogg` | 300MB | **5 分钟**（`max_audio_duration_seconds`，默认 300；`0` 表示不限制） |
 
 ### 1.8 个人库隔离（媒体必须带头）
 
@@ -288,15 +288,15 @@ curl -s http://10.60.19.103:8811/api/system/ready
   "gpu_busy": false,
   "gpus": [{ "id": 0, "busy": false, "job_id": null }],
   "features": {
-    "max_synthesis_duration_seconds": 180,
-    "max_audio_duration_seconds": 180,
+    "max_synthesis_duration_seconds": 300,
+    "max_audio_duration_seconds": 300,
     "max_video_duration_seconds": 300,
     "task_retain_days": 15
   }
 }
 ```
 
-`features.max_audio_duration_seconds` / `max_synthesis_duration_seconds` 为驱动音频时长上限，默认 `180`（3 分钟）。`features.max_video_duration_seconds` 为形象视频时长上限，默认 `300`（5 分钟）。`task_retain_days` 为已结束作品保留天数，默认 15。超过音频/视频上限时，对应上传或创建接口会失败。没有 GPU 时 `gpus` 为空数组。`HEAD` 只返回头，不返回正文。
+`features.max_audio_duration_seconds` / `max_synthesis_duration_seconds` 为驱动音频时长上限，默认 `300`（5 分钟）。`features.max_video_duration_seconds` 为形象视频时长上限，默认 `300`（5 分钟）。`task_retain_days` 为已结束作品保留天数，默认 15。超过音频/视频上限时，对应上传或创建接口会失败。没有 GPU 时 `gpus` 为空数组。`HEAD` 只返回头，不返回正文。
 
 ---
 
@@ -782,7 +782,7 @@ curl -H "X-User-Id: u1001" -o avatar.mp4 \
 }
 ```
 
-失败 HTTP `400`，`detail` 例如：`不支持的音频格式：.xxx`、`音频不能超过 300MB`、`音频不能超过 3分钟（当前 …）`、`请使用 JSON 提交 filename 与 size`。
+失败 HTTP `400`，`detail` 例如：`不支持的音频格式：.xxx`、`音频不能超过 300MB`、`音频不能超过 5分钟（当前 …）`、`请使用 JSON 提交 filename 与 size`。
 
 ```bash
 curl -s -X POST http://10.60.19.103:8811/api/uploads \
@@ -910,7 +910,7 @@ curl -s "http://10.60.19.103:8811/api/tasks?username=u1001&status=wait&page=1"
 | `步数只能是 30, 50, 80` | `steps` 非法 |
 | `不支持的音频格式：.xxx` | 后缀不支持 |
 | `无法读取音频时长` | ffprobe 失败 |
-| `音频不能超过 3分钟（当前 …）` | 超过 `max_audio_duration_seconds` |
+| `音频不能超过 5分钟（当前 …）` | 超过 `max_audio_duration_seconds` |
 | `形象不存在` | ID 无效，或个人形象不属于该用户 |
 | `形象还在转码，请稍后再提交` | 形象未就绪 |
 | `音频文件为空` | 文件空或分片未完成 |

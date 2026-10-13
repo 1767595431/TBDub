@@ -137,7 +137,7 @@ def video_duration_limit_seconds(raw: Any, default: int = 300) -> int:
     return duration_limit_seconds(raw, default)
 
 
-def audio_duration_limit_seconds(raw: Any, default: int = 180) -> int:
+def audio_duration_limit_seconds(raw: Any, default: int = 300) -> int:
     return duration_limit_seconds(raw, default)
 
 
@@ -158,7 +158,7 @@ def video_duration_limit_message(duration: float | None, max_seconds: float | in
 
 
 def audio_duration_limit_message(duration: float | None, max_seconds: float | int | None) -> str | None:
-    return _duration_limit_message("音频", duration, max_seconds, 180)
+    return _duration_limit_message("音频", duration, max_seconds, 300)
 
 
 def remaining_text(seconds: float | None, progress: float | None = None) -> str:

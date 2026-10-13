@@ -18,8 +18,8 @@ max_work_height: 1080
 max_preprocess_cache_bytes: 2500000000
 # 形象视频时长上限，默认 5 分钟；0 表示不限制
 max_video_duration_seconds: 300
-# 驱动音频时长上限，默认 3 分钟；0 表示不限制
-max_audio_duration_seconds: 180
+# 驱动音频时长上限，默认 5 分钟；0 表示不限制
+max_audio_duration_seconds: 300
 # 无 GPU / 无权重时的前端联调：跳过官方 inference.py，按五阶段推进度，
 # 用 ffmpeg 把形象视频循环到音频时长并叠驱动音频。有显卡后务必改回 false。
 mock_synthesis: false
