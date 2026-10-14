@@ -332,7 +332,15 @@ def run_inference(
         tile_size=(32, 32),
         tile_stride=(16, 16),
     )
-    generated_video = pipeline.vae_output_to_video(decoded)
+    # 逐帧转换，替代 pipeline.vae_output_to_video(decoded)：
+    # 后者会先构造一份与整段成片等大的 (T,H,W,C) 张量，使"解码成片"这一步的显存峰值翻倍
+    # （300 秒音频时 22GiB 输入 + 22GiB 输出 = 44GiB，直接顶爆 48G 卡）。
+    # 逐帧调用 vae_output_to_image 的数值结果与批量版完全一致（批量版本也是按帧转 PIL），
+    # 峰值只剩解码结果本身，长音频因此可以在同一张卡上跑完。
+    generated_video = [
+        pipeline.vae_output_to_image(decoded[:, :, index], pattern="B C H W")
+        for index in range(decoded.shape[2])
+    ]
     if first_clip_preroll:
         generated_video = generated_video[MOTION_NUM_FRAMES:]
     generated_video = generated_video[:real_length]
