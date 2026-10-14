@@ -797,6 +797,12 @@ class Workers:
                 "--ref-cfg-scale", "2.0",
                 "--audio-cfg-scale", "6.0",
             ]
+        # 长音频开 CPU offload：解码成片那一步要一次性把整段成片放进显存
+        # （帧数 × 3MiB；196 秒音频就要 14.6GB），不把已用完的 T5/DiT/HuBERT
+        # 挪去内存就会 OOM。阈值见 config.yaml 的 cpu_offload_above_seconds。
+        offload_above = float(self.cfg.get("cpu_offload_above_seconds") or 60)
+        if float(row.get("audio_duration") or 0) >= offload_above:
+            cmd.append("--cpu-offload")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"

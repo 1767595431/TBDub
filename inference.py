@@ -152,6 +152,11 @@ def build_pipeline(args: argparse.Namespace) -> tuple[TBDubPipeline, torch.Tenso
     runtime_vram_config = dict(VRAM_CONFIG)
     for key in ("offload_device", "onload_device", "preparing_device", "computation_device"):
         runtime_vram_config[key] = args.device
+    # 官方 V1.1 的同名特性：把"当前不参与计算"的模型权重挪到 CPU 内存，
+    # 给解码成片那一步腾显存（那一步要一次性放下整段成片：帧数 × 3MiB）。
+    # 代价是搬运时间，所以默认关闭，由调用方按音频时长决定是否开启。
+    if getattr(args, "cpu_offload", False):
+        runtime_vram_config["offload_device"] = "cpu"
 
     pipeline = TBDubPipeline.from_pretrained(
         torch_dtype=torch.bfloat16,
@@ -431,6 +436,10 @@ def parse_args() -> argparse.Namespace:
         help="FlowMatch sigma shift; defaults to 5.0 for Teacher and 1.0 for Student.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--cpu-offload", action=argparse.BooleanOptionalAction, default=False,
+        help="Reduce GPU memory by moving inactive model weights to CPU. Disabled by default for faster inference.",
+    )
     parser.add_argument("--per-chunk-audio", "--per_chunk_audio", dest="per_chunk_audio", action="store_true")
     parser.add_argument(
         "--cropped-input", "--cropped_input", dest="cropped_input", action="store_true",
