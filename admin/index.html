@@ -209,12 +209,13 @@
                 <div class="field">
                   <label>合成质量</label>
                   <div class="quality-steps" role="radiogroup" aria-label="合成质量">
-                    <label class="step"><input type="radio" name="steps" value="50" checked><span class="step-name">高质量</span></label>
-                    <label class="step step-ultra"><input type="radio" name="steps" value="80"><span class="step-name">超高质量</span></label>
+                    <label class="step"><input type="radio" name="steps" value="30"><span class="step-name">标准（2 步）</span></label>
+                    <label class="step"><input type="radio" name="steps" value="50" checked><span class="step-name">高质量（2 步）</span></label>
+                    <label class="step step-ultra"><input type="radio" name="steps" value="80"><span class="step-name">超高质量（30 步）</span></label>
                   </div>
                   <p class="hint-text quality-hint">
-                    <strong>高质量</strong>使用 Student，速度更快。
-                    <strong>超高质量</strong>使用 Teacher，嘴型更稳，但<strong>耗时明显更长，请耐心等待</strong>。
+                    <strong>标准 / 高质量</strong>都用 Student 模型、固定 2 步，<strong>出片完全一样</strong>，速度最快。
+                    <strong>超高质量</strong>用 Teacher 模型、固定 30 步，嘴型更稳、更像本人，但<strong>耗时明显更长，请耐心等待</strong>。
                     同一形象<strong>首次合成</strong>会做人脸预处理并保存，之后会直接复用。
                     形象过长时只取一段给官方合成，官方再<strong>正放倒放</strong>对齐音频，避免整段进内存。
                   </p>
@@ -337,6 +338,6 @@
   </div>
 
   <script src="admin/assets/fx.js"></script>
-  <script src="admin/assets/app.js?v=upload-robust-3"></script>
+  <script src="admin/assets/app.js?v=std-2step-1"></script>
 </body>
 </html>
