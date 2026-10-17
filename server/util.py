@@ -4,6 +4,7 @@ import math
 import re
 import secrets
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -73,7 +74,9 @@ def fail(msg: str, code: int = 1) -> dict[str, Any]:
 def clean_user_id(raw: str | None) -> str | None:
     if raw is None:
         return None
-    value = str(raw).strip()
+    # 归一化：去首尾空格 + Unicode NFC。中文/全角/组合字符统一成同一写法，
+    # 避免「松江」「松江 」「全角写法」被当成不同用户。
+    value = unicodedata.normalize("NFC", str(raw)).strip()
     if not value:
         return None
     if len(value) > 64:

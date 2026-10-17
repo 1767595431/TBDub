@@ -1568,7 +1568,7 @@ function renderAvatarCard(a, opts = {}) {
     : '';
   let actions;
   if (pickMode) {
-    actions = `${previewBtn}<button type="button" class="btn btn-primary btn-sm" data-pick="${esc(a.identifier)}" ${ready ? '' : 'disabled'}>选择</button>${rebakeBtn}`;
+    actions = `${previewBtn}<button type="button" class="btn btn-primary btn-sm" data-pick="${esc(a.identifier)}" ${ready ? '' : 'disabled'}>选择</button>${rebakeBtn}<button type="button" class="btn btn-ghost btn-sm" data-del-av="${esc(a.identifier)}">删除</button>`;
   } else {
     actions = compact
       ? `${previewBtn}<button type="button" class="btn btn-ghost btn-sm" data-use="${esc(a.identifier)}" ${ready ? '' : 'disabled'}>用于创建</button>${rebakeBtn}`
@@ -1583,7 +1583,7 @@ function renderAvatarCard(a, opts = {}) {
     ? ` data-pick-id="${esc(a.identifier)}" data-pick-video="${esc(pv || '')}" data-pick-thumb="${esc(thumb)}" data-pick-ready="${ready ? '1' : '0'}"`
     : '';
   return `<article class="media-card${selectedCls}${ready ? ' is-ready' : ' card-disabled'}${baking ? ' is-baking' : ''}" data-avatar-id="${esc(a.identifier)}"${pickAttrs}${!pickMode && pv ? ` data-play="${esc(pv)}" data-title="${previewTitle}"` : ''}>
-    ${posterTag}${posterHtml(thumb, a.name)}<span class="badge-status badge-done">${a.type === 'public' ? '公共' : '个人'}</span>${bakeBadge(a)}${pv ? playOverlay() : ''}</div>
+    ${posterTag}${posterHtml(thumb, a.name)}<span class="badge-status badge-done">${a.type === 'public' ? '公共' : `个人 · ${esc(a.user_id || '')}`}</span>${bakeBadge(a)}${pv ? playOverlay() : ''}</div>
     <div class="card-body">
       <h3>${esc(a.name)}</h3>
       <div class="sub">${esc(a.identifier)}${a.type === 'private' && a.username ? ' · ' + esc(a.username) : ''}${pv ? ' · 点击封面预览形象' : ''}</div>
